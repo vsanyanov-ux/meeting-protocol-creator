@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, FileResponse
 import urllib.parse
@@ -89,6 +89,16 @@ for d in [UPLOAD_DIR, PROTOCOLS_DIR]:
 processing_status = {}
 
 # --- Security: Validate required env vars on startup ---
+@app.get("/health")
+async def health_check():
+    """Standard health check endpoint for monitoring."""
+    # We could add more checks here (e.g. Disk space, Yandex Cloud connectivity)
+    return {
+        "status": "healthy",
+        "timestamp": time.time(),
+        "tasks_in_queue": len(processing_status) - sum(1 for s in processing_status.values() if s.get("status") in ["completed", "failed"])
+    }
+
 @app.on_event("startup")
 async def validate_config():
     required_vars = ["YANDEX_API_KEY", "YANDEX_FOLDER_ID"]
@@ -208,6 +218,31 @@ async def process_meeting(background_tasks: BackgroundTasks, file: UploadFile = 
     local_path = os.path.join(UPLOAD_DIR, f"{file_id}.{extension}")
     with open(local_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
+    
+    # 2.1 Deep Validation (MIME check)
+    try:
+        mime_type = magic.from_file(local_path, mime=True)
+        logger.info(f"File uploaded: {file.filename}, detected MIME: {mime_type}")
+        
+        # Valid MIME types list (simplified)
+        valid_mimes = [
+            "audio/", "video/", "text/plain", 
+            "application/pdf", 
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/msword",
+            "application/octet-stream" # some browsers send this for specific audio
+        ]
+        
+        if not any(mime_type.startswith(m) for m in valid_mimes):
+            os.remove(local_path)
+            logger.warning(f"Rejected file with invalid MIME type: {mime_type}")
+            raise HTTPException(status_code=400, detail=f"Invalid file content. Detected: {mime_type}")
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"MIME validation error: {e}")
+        # Continue if magic fails but log it
     
     # Initialize status
     processing_status[file_id] = {"status": "starting", "message": "File uploaded successfully"}
