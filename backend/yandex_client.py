@@ -1,6 +1,7 @@
 import os
 import time
 import requests
+from typing import Optional, List, Dict, Any
 import json
 import logging
 import boto3
@@ -117,60 +118,72 @@ class YandexClient:
             
             logger.info("Transcription in progress...")
 
-    def create_protocol(self, transcription: str) -> Optional[str]:
-        """Use Yandex GPT to summarize transcription into a formal protocol."""
+    def create_protocol(self, transcription: str) -> Dict[str, Any]:
+        """
+        Use Yandex GPT to summarize transcription into a formal protocol.
+
+        Returns dict:
+            {
+                "text": str | None,       # сгенерированный протокол
+                "latency_ms": int,        # время ответа API в мс
+                "input_tokens": int | None,
+                "output_tokens": int | None,
+                "messages": list           # prompt для Langfuse
+            }
+        """
         headers = {
             "Authorization": f"Api-Key {self.api_key}",
             "Content-Type": "application/json"
         }
         
+        system_text = (
+            "Ты — ведущий эксперт по корпоративному управлению. "
+            "Твоя задача — трансформировать расшифровку аудио в безупречный протокол совещания по международным стандартам. "
+            "Используй Markdown заголовки '##'.\n\n"
+            "СТРУКТУРА:\n"
+            "## Общая информация\n"
+            "Дата: [укажи если есть, иначе ____]\n"
+            "Тема: [четкая формулировка]\n\n"
+            "## Участники\n"
+            "Присутствовали: [имена и роли]\n\n"
+            "## Повестка дня\n"
+            "[краткий список вопросов]\n\n"
+            "## Ход обсуждения\n"
+            "[аналитическое резюме дискуссии, основные аргументы]\n\n"
+            "## Принятые решения и Поручения\n"
+            "| № | Поручение | Ответственный | Срок исполнения |\n"
+            "|---|-----------|---------------|-----------------|\n"
+            "| 1 | Описание задачи | ФИО | Срок |\n\n"
+            "## Нерешенные вопросы\n"
+            "[вопросы, оставшиеся без ответа]"
+        )
+        messages = [
+            {"role": "system", "text": system_text},
+            {"role": "user", "text": f"Составь подробный протокол совещания на основе следующего текста:\n\n{transcription}"}
+        ]
         prompt = {
             "modelUri": f"gpt://{self.folder_id}/{self.gpt_model}",
-            "completionOptions": {
-                "stream": False,
-                "temperature": 0.3,
-                "maxTokens": "2000"
-            },
-            "messages": [
-                {
-                    "role": "system",
-                    "text": (
-                        "Ты — ведущий эксперт по корпоративному управлению. "
-                        "Твоя задача — трансформировать расшифровку аудио в безупречный протокол совещания по международным стандартам. "
-                        "Используй Markdown заголовки '##'.\n\n"
-                        "СТРУКТУРА:\n"
-                        "## Общая информация\n"
-                        "Дата: [укажи если есть, иначе ____]\n"
-                        "Тема: [четкая формулировка]\n\n"
-                        "## Участники\n"
-                        "Присутствовали: [имена и роли]\n\n"
-                        "## Повестка дня\n"
-                        "[краткий список вопросов]\n\n"
-                        "## Ход обсуждения\n"
-                        "[аналитическое резюме дискуссии, основные аргументы]\n\n"
-                        "## Принятые решения и Поручения\n"
-                        "| № | Поручение | Ответственный | Срок исполнения |\n"
-                        "|---|-----------|---------------|-----------------|\n"
-                        "| 1 | Описание задачи | ФИО | Срок |\n\n"
-                        "## Нерешенные вопросы\n"
-                        "[вопросы, оставшиеся без ответа]"
-                    )
-                },
-                {
-                    "role": "user",
-                    "text": f"Составь подробный протокол совещания на основе следующего текста:\n\n{transcription}"
-                }
-            ]
+            "completionOptions": {"stream": False, "temperature": 0.3, "maxTokens": "2000"},
+            "messages": messages
         }
 
+        result = {"text": None, "latency_ms": 0, "input_tokens": None, "output_tokens": None, "messages": messages}
+
+        t_start = time.time()
         response = requests.post(self.gpt_url, headers=headers, json=prompt)
+        result["latency_ms"] = int((time.time() - t_start) * 1000)
+
         if response.status_code == 200:
-            result = response.json()
+            data = response.json()
             try:
-                return result["result"]["alternatives"][0]["message"]["text"]
+                result["text"] = data["result"]["alternatives"][0]["message"]["text"]
+                # Yandex GPT возвращает usage если доступно
+                usage = data["result"].get("usage", {})
+                result["input_tokens"] = usage.get("inputTextTokens")
+                result["output_tokens"] = usage.get("completionTokens")
             except (KeyError, IndexError):
-                logger.error(f"Malformed GPT response: {result}")
-                return None
+                logger.error(f"Malformed GPT response: {data}")
         else:
             logger.error(f"GPT Error: {response.status_code} - {response.text}")
-            return None
+
+        return result
