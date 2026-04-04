@@ -144,13 +144,16 @@ const App = () => {
                     ref={fileInputRef} 
                     onChange={handleFileChange} 
                     style={{ display: 'none' }}
-                    accept=".mp3,.m4a,.aac,.wav"
+                    accept=".mp3,.m4a,.aac,.wav,.mp4,.webm,.mov,.avi,.ogg,.flac,.txt,.pdf,.docx"
                   />
                   <Upload className="dropzone-icon" />
                   <div style={{ textAlign: 'center' }}>
                     <p style={{ fontWeight: 600 }}>{file ? file.name : "Нажмите или перетащите файл"}</p>
-                    <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
-                      Поддерживаются MP3, M4A, AAC, WAV (до 500 МБ)
+                    <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)', marginTop: '0.5rem', lineHeight: '1.4' }}>
+                      Аудио: MP3, WAV, M4A, AAC, OGG, FLAC<br/>
+                      Видео: MP4, WEBM, MOV, AVI<br/>
+                      Документы: PDF, DOCX, TXT<br/>
+                      (до 500 МБ)
                     </p>
                   </div>
                 </div>

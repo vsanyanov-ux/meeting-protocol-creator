@@ -14,6 +14,7 @@ from yandex_client import YandexClient
 from protocol_generator import generate_docx
 from email_client import send_email
 from langfuse_client import PipelineTrace, submit_score
+from normalizer import normalize_file
 
 load_dotenv()
 
@@ -156,8 +157,9 @@ async def process_meeting(background_tasks: BackgroundTasks, file: UploadFile = 
     """Main endpoint to upload audio and trigger the protocol creation flow."""
     # 1. Validation
     extension = file.filename.split('.')[-1].lower()
-    if extension not in ["mp3", "aac", "m4a", "wav"]:
-        raise HTTPException(status_code=400, detail="Only MP3, AAC/M4A, and WAV formats are supported.")
+    allowed_exts = ["mp3", "aac", "m4a", "wav", "mp4", "webm", "mov", "avi", "ogg", "flac", "txt", "pdf", "docx"]
+    if extension not in allowed_exts:
+        raise HTTPException(status_code=400, detail="Unsupported file format.")
     
     # 2. Save file locally
     file_id = str(uuid.uuid4())
@@ -188,16 +190,36 @@ async def run_full_pipeline(local_path: str, file_id: str):
     )
 
     try:
-        # A. Upload to S3 & Transcribe
-        transcription = None
-        has_s3 = all([yandex_client.s3_access_key, yandex_client.s3_secret_key, yandex_client.s3_bucket])
+        # 1. Normalization Step
+        processing_status[file_id] = {"status": "starting", "message": "Normalizing uploaded file..."}
+        trace.start_span("normalization")
+        norm_res = normalize_file(local_path, file_id)
+        trace.end_span("normalization", norm_res)
 
-        if has_s3:
-            processing_status[file_id] = {"status": "uploading", "message": "Uploading to secure cloud storage..."}
-            trace.start_span("s3_upload", {"bucket": yandex_client.s3_bucket})
-            object_name = f"meetings/{file_id}_{os.path.basename(local_path)}"
-            file_url = yandex_client.upload_to_s3(local_path, object_name)
-            trace.end_span("s3_upload", {"url_generated": bool(file_url)})
+        if norm_res["type"] == "error":
+            processing_status[file_id] = {"status": "error", "message": norm_res["error"]}
+            trace.finish("error", {"stage": "normalization", "reason": norm_res["error"]})
+            return
+
+        transcription = None
+
+        if norm_res["type"] == "text":
+            processing_status[file_id] = {"status": "transcribing", "message": "Text document detected. Bypassing audio transcription..."}
+            transcription = norm_res["content"]
+            
+        elif norm_res["type"] == "audio":
+            # Use the normalized audio path for all STT logic
+            target_audio_path = norm_res["path"]
+            
+            # A. Upload to S3 & Transcribe
+            has_s3 = all([yandex_client.s3_access_key, yandex_client.s3_secret_key, yandex_client.s3_bucket])
+
+            if has_s3:
+                processing_status[file_id] = {"status": "uploading", "message": "Uploading to secure cloud storage..."}
+                trace.start_span("s3_upload", {"bucket": yandex_client.s3_bucket})
+                object_name = f"meetings/{file_id}_{os.path.basename(target_audio_path)}"
+                file_url = yandex_client.upload_to_s3(target_audio_path, object_name)
+                trace.end_span("s3_upload", {"url_generated": bool(file_url)})
 
             if file_url:
                 processing_status[file_id] = {"status": "transcribing", "message": "Transcribing audio (long operation)..."}
@@ -205,8 +227,8 @@ async def run_full_pipeline(local_path: str, file_id: str):
                 transcription = yandex_client.transcribe_long(file_url)
                 trace.end_span("transcription_long", {"chars": len(transcription) if transcription else 0})
 
-        # B. Fallback to chunked transcription if no S3
-        if not transcription:
+        # B. Fallback to chunked transcription if no S3 (only for audio)
+        if not transcription and norm_res["type"] == "audio":
             processing_status[file_id] = {"status": "transcribing", "message": "Processing long audio via chunking (No S3)..."}
             
             # 1. Create a workspace for chunks
@@ -215,14 +237,11 @@ async def run_full_pipeline(local_path: str, file_id: str):
                 os.makedirs(chunk_prefix)
             
             try:
-                # 2. Split audio into 25-second chunks in OggOpus format
-                # -f segment: use segmenter
-                # -segment_time 25: 25 seconds chunks
-                # -c:a libopus: encode to Opus (SpeechKit v1 requirement)
+                # 2. Split normalized audio into 25-second chunks
                 subprocess.run([
-                    "ffmpeg", "-y", "-i", local_path, 
+                    "ffmpeg", "-y", "-i", target_audio_path, 
                     "-f", "segment", "-segment_time", "25",
-                    "-c:a", "libopus", "-b:a", "24k", 
+                    "-c", "copy", # Already Opus from normalizer
                     os.path.join(chunk_prefix, "chunk_%03d.ogg")
                 ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 
@@ -318,6 +337,8 @@ async def run_full_pipeline(local_path: str, file_id: str):
 
         if os.path.exists(local_path):
             os.remove(local_path)
+        if norm_res.get("path") and os.path.exists(norm_res["path"]):
+            os.remove(norm_res["path"])
 
     except Exception as e:
         logger.error(f"Pipeline error for {file_id}: {e}")

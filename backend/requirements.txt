@@ -9,3 +9,4 @@ yandex-cloud
 email-validator
 boto3
 langfuse
+pdfplumber
