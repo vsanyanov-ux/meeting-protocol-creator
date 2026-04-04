@@ -53,7 +53,11 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Shutting down Meeting Protocol Creator API")
 
-app = FastAPI(title="Meeting Protocol Creator API", lifespan=lifespan)
+app = FastAPI(
+    title="Meeting Protocol Creator API",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
 # --- Security: File size limit middleware (500 MB) ---
 MAX_UPLOAD_SIZE_BYTES = 500 * 1024 * 1024  # 500 MB
