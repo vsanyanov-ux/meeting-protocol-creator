@@ -1,0 +1,30 @@
+services:
+  backend:
+    build: ./backend
+    container_name: mpc-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend/uploads:/app/uploads
+      - ./backend/logs:/app/logs
+      - ./backend/temp_protocols:/app/temp_protocols
+    restart: unless-stopped
+    networks:
+      - mpc-network
+
+  frontend:
+    build: ./frontend
+    container_name: mpc-frontend
+    ports:
+      - "90:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - mpc-network
+
+networks:
+  mpc-network:
+    driver: bridge
