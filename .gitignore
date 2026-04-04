@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+dist/
+build/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+
+# Environment
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Project Specific
+backend/uploads/
+backend/temp_protocols/
+uploads/
+temp_protocols/
+*.docx
+*.aac
+*.mp3
+*.wav
+*.m4a
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-multipart
+python-dotenv
+requests
+aiohttp
+python-docx
+yandex-cloud
+email-validator
+boto3
