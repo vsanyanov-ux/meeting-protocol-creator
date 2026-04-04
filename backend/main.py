@@ -8,6 +8,7 @@ import shutil
 import uuid
 import subprocess
 import logging
+import time
 
 # Import our custom modules
 from providers.base import BaseAIProvider
@@ -163,6 +164,31 @@ async def submit_feedback(file_id: str, body: FeedbackRequest):
         # Langfuse не настроен — не ошибка, просто не записываем
         return {"status": "skipped", "message": "Langfuse не настроен, оценка не сохранена"}
 
+def cleanup_old_files(max_age_seconds: int = 86400):
+    """Deletes files in UPLOAD_DIR and PROTOCOLS_DIR older than max_age_seconds."""
+    now = time.time()
+    for directory in [UPLOAD_DIR, PROTOCOLS_DIR]:
+        if not os.path.exists(directory):
+            continue
+        for filename in os.listdir(directory):
+            filepath = os.path.join(directory, filename)
+            # Skip directories like chunks_xxx unless they are also old, but let's just delete files for now.
+            if os.path.isfile(filepath):
+                try:
+                    if os.stat(filepath).st_mtime < now - max_age_seconds:
+                        os.remove(filepath)
+                        logger.info(f"Cleaned up old file: {filepath}")
+                except Exception as e:
+                    logger.error(f"Failed to clean up file {filepath}: {e}")
+            elif os.path.isdir(filepath) and filename.startswith("chunks_"):
+                # Prune old chunk directories
+                try:
+                    if os.stat(filepath).st_mtime < now - max_age_seconds:
+                        shutil.rmtree(filepath)
+                        logger.info(f"Cleaned up old chunk dir: {filepath}")
+                except Exception as e:
+                    logger.error(f"Failed to clean up dir {filepath}: {e}")
+
 @app.post("/process-meeting")
 async def process_meeting(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     """Main endpoint to upload audio and trigger the protocol creation flow."""
@@ -183,6 +209,7 @@ async def process_meeting(background_tasks: BackgroundTasks, file: UploadFile = 
     
     # 3. Trigger processing in background
     background_tasks.add_task(run_full_pipeline, local_path, file_id)
+    background_tasks.add_task(cleanup_old_files)
     
     return {
         "status": "processing",

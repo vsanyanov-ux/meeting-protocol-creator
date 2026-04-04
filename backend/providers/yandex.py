@@ -116,11 +116,15 @@ class YandexProvider(BaseAIProvider):
     def _transcribe_short(self, file_content: bytes, lang: str = "ru-RU") -> Optional[str]:
         headers = {"Authorization": f"Api-Key {self.api_key}"}
         params = {"folderId": self.folder_id, "lang": lang}
-        response = requests.post(self.stt_url, headers=headers, params=params, data=file_content)
-        if response.status_code == 200:
-            return response.json().get("result")
-        else:
-            logger.error(f"STT Error: {response.status_code} - {response.text}")
+        try:
+            response = requests.post(self.stt_url, headers=headers, params=params, data=file_content, timeout=30)
+            if response.status_code == 200:
+                return response.json().get("result")
+            else:
+                logger.error(f"STT Error: {response.status_code} - {response.text}")
+                return None
+        except requests.exceptions.RequestException as e:
+            logger.error(f"STT Network Error: {e}")
             return None
 
     def _transcribe_long(self, file_url: str, lang: str = "ru-RU") -> Optional[str]:
@@ -133,23 +137,37 @@ class YandexProvider(BaseAIProvider):
             },
             "audio": {"uri": file_url}
         }
-        response = requests.post("https://transcription.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize", 
-                                headers=headers, json=body)
-        if response.status_code != 200:
-            logger.error(f"Long STT Start Error: {response.status_code} - {response.text}")
-            return None
-        operation_id = response.json().get("id")
-        while True:
-            time.sleep(10)
-            status_response = requests.get(f"{self.operation_url}{operation_id}", headers=headers)
-            if status_response.status_code != 200:
-                logger.error(f"Operation status check error: {status_response.text}")
+        try:
+            response = requests.post("https://transcription.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize", 
+                                    headers=headers, json=body, timeout=30)
+            if response.status_code != 200:
+                logger.error(f"Long STT Start Error: {response.status_code} - {response.text}")
                 return None
-            status_data = status_response.json()
-            if status_data.get("done"):
-                chunks = status_data.get("response", {}).get("chunks", [])
-                text = " ".join([chunk.get("alternatives", [{}])[0].get("text", "") for chunk in chunks])
-                return text
+            operation_id = response.json().get("id")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Long STT Network Error: {e}")
+            return None
+            
+        max_retries = 360 # ~1 hour timeout total for long async STT (360 * 10 sec)
+        attempts = 0
+        while attempts < max_retries:
+            time.sleep(10)
+            attempts += 1
+            try:
+                status_response = requests.get(f"{self.operation_url}{operation_id}", headers=headers, timeout=10)
+                if status_response.status_code != 200:
+                    logger.error(f"Operation status check error: {status_response.text}")
+                    return None
+                status_data = status_response.json()
+                if status_data.get("done"):
+                    chunks = status_data.get("response", {}).get("chunks", [])
+                    text = " ".join([chunk.get("alternatives", [{}])[0].get("text", "") for chunk in chunks])
+                    return text
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Status check connection issue (attempt {attempts}): {e}")
+                
+        logger.error("Long STT timed out after 1 hour.")
+        return None
 
     def create_protocol(self, transcription: str) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
@@ -170,18 +188,24 @@ class YandexProvider(BaseAIProvider):
         }
         result = {"text": None, "latency_ms": 0, "input_tokens": None, "output_tokens": None, "messages": messages}
         t_start = time.time()
-        response = requests.post(self.gpt_url, headers=headers, json=prompt)
-        result["latency_ms"] = int((time.time() - t_start) * 1000)
+        
+        try:
+            response = requests.post(self.gpt_url, headers=headers, json=prompt, timeout=120)
+            result["latency_ms"] = int((time.time() - t_start) * 1000)
 
-        if response.status_code == 200:
-            data = response.json()
-            try:
-                result["text"] = data["result"]["alternatives"][0]["message"]["text"]
-                usage = data["result"].get("usage", {})
-                result["input_tokens"] = usage.get("inputTextTokens")
-                result["output_tokens"] = usage.get("completionTokens")
-            except (KeyError, IndexError):
-                logger.error(f"Malformed GPT response: {data}")
-        else:
-            logger.error(f"GPT Error: {response.status_code} - {response.text}")
+            if response.status_code == 200:
+                data = response.json()
+                try:
+                    result["text"] = data["result"]["alternatives"][0]["message"]["text"]
+                    usage = data["result"].get("usage", {})
+                    result["input_tokens"] = usage.get("inputTextTokens")
+                    result["output_tokens"] = usage.get("completionTokens")
+                except (KeyError, IndexError):
+                    logger.error(f"Malformed GPT response: {data}")
+            else:
+                logger.error(f"GPT Error: {response.status_code} - {response.text}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"GPT Network Error: {e}")
+            result["latency_ms"] = int((time.time() - t_start) * 1000)
+            
         return result
