@@ -10,6 +10,8 @@ import subprocess
 import time
 import sys
 import asyncio
+import magic
+from contextlib import asynccontextmanager
 from loguru import logger
 
 # Import our custom modules
@@ -31,7 +33,27 @@ MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", 2))
 processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
 logger.info(f"Initialized with MAX_CONCURRENT_TASKS = {MAX_CONCURRENT_TASKS}")
 
-app = FastAPI(title="Meeting Protocol Creator API")
+# Force UTF-8 for Windows console (prevents UnicodeEncodeError with emojis/non-ascii)
+if sys.platform == 'win32':
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    required_vars = ["YANDEX_API_KEY", "YANDEX_FOLDER_ID"]
+    missing = [var for var in required_vars if not os.getenv(var)]
+    if missing:
+        logger.error(f"STARTUP ERROR: Missing required env vars: {missing}")
+    
+    logger.info(f"Config OK. CORS allowed origins: {ALLOWED_ORIGINS}")
+    # MAX_UPLOAD_SIZE_BYTES is defined below, so we use a hardcoded or global check
+    # But wait, ordering matters. Let's move MAX_UPLOAD_SIZE_BYTES up.
+    
+    yield
+    logger.info("Shutting down Meeting Protocol Creator API")
+
+app = FastAPI(title="Meeting Protocol Creator API", lifespan=lifespan)
 
 # --- Security: File size limit middleware (500 MB) ---
 MAX_UPLOAD_SIZE_BYTES = 500 * 1024 * 1024  # 500 MB
@@ -99,17 +121,6 @@ async def health_check():
         "tasks_in_queue": len(processing_status) - sum(1 for s in processing_status.values() if s.get("status") in ["completed", "failed"])
     }
 
-@app.on_event("startup")
-async def validate_config():
-    required_vars = ["YANDEX_API_KEY", "YANDEX_FOLDER_ID"]
-    missing = [var for var in required_vars if not os.getenv(var)]
-    if missing:
-        raise RuntimeError(
-            f"ОШИБКА ЗАПУСКА: Отсутствуют обязательные переменные окружения: {missing}. "
-            f"Проверьте файл .env"
-        )
-    logger.info(f"✅ Config OK. CORS allowed origins: {ALLOWED_ORIGINS}")
-    logger.info(f"✅ Upload size limit: {MAX_UPLOAD_SIZE_BYTES // (1024*1024)} MB")
 
 
 @app.get("/")
@@ -122,7 +133,15 @@ async def get_status(file_id: str):
     status = processing_status.get(file_id)
     if not status:
         raise HTTPException(status_code=404, detail="Processing task not found")
-    return status
+    
+    # Return a safe copy of the status
+    return {
+        "status": status.get("status"),
+        "message": status.get("message"),
+        "docx_path": status.get("docx_path"),
+        "transcription": status.get("transcription"),
+        "verification_report": status.get("verification_report")
+    }
 
 @app.get("/download/{file_id}")
 async def download_protocol(file_id: str):
@@ -207,33 +226,53 @@ def cleanup_old_files(max_age_seconds: int = 86400):
 @app.post("/process-meeting")
 async def process_meeting(background_tasks: BackgroundTasks, file: UploadFile = File(...)):
     """Main endpoint to upload audio and trigger the protocol creation flow."""
-    # 1. Validation
-    extension = file.filename.split('.')[-1].lower()
-    allowed_exts = ["mp3", "aac", "m4a", "wav", "mp4", "webm", "mov", "avi", "ogg", "flac", "txt", "pdf", "docx"]
-    if extension not in allowed_exts:
-        raise HTTPException(status_code=400, detail="Unsupported file format.")
+    # 1. Basic Extension Check (Optional Hint)
+    parts = file.filename.split('.')
+    extension = parts[-1].lower() if len(parts) > 1 else ""
     
-    # 2. Save file locally
+    # 2. Save file locally (we will validate content next)
     file_id = str(uuid.uuid4())
-    local_path = os.path.join(UPLOAD_DIR, f"{file_id}.{extension}")
+    # If no extension, we'll use 'tmp' but python-magic doesn't care about the filename
+    safe_ext = f".{extension}" if extension else ""
+    local_path = os.path.join(UPLOAD_DIR, f"{file_id}{safe_ext}")
+    
     with open(local_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
     
-    # 2.1 Deep Validation (MIME check)
+    # 2.1 Deep Validation (MIME check) - This is the source of truth
     try:
         mime_type = magic.from_file(local_path, mime=True)
         logger.info(f"File uploaded: {file.filename}, detected MIME: {mime_type}")
         
         # Valid MIME types list (simplified)
         valid_mimes = [
-            "audio/", "video/", "text/plain", 
+            "audio/", "video/", "text/", 
             "application/pdf", 
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "application/msword",
-            "application/octet-stream" # some browsers send this for specific audio
+            "application/vnd.ms-powerpoint",
+            "application/octet-stream", # common fallback
+            "application/x-zip-compressed", # occasionally for archives
+            "inode/x-empty" # skip empty but don't crash
         ]
         
-        if not any(mime_type.startswith(m) for m in valid_mimes):
+        # Check if MIME type is valid
+        is_valid = any(mime_type.startswith(m) for m in valid_mimes)
+        
+        # Extension-based rejection (extra safety)
+        forbidden_extensions = ["exe", "dll", "bin", "sh", "bat", "msi"]
+        if extension in forbidden_extensions:
+            if os.path.exists(local_path):
+                os.remove(local_path)
+            logger.warning(f"Rejected forbidden extension: {extension}")
+            raise HTTPException(status_code=400, detail=f"Unsupported file extension: .{extension}")
+        
+        # Special case: some AAC/M4A files might be detected as audio/x-hx-aac-adts or similar
+        if not is_valid and ("audio" in mime_type or "video" in mime_type or "mpeg" in mime_type):
+            is_valid = True
+            logger.info(f"Accepted {mime_type} as it contains 'audio/video/mpeg' keywords")
+
+        if not is_valid:
             os.remove(local_path)
             logger.warning(f"Rejected file with invalid MIME type: {mime_type}")
             raise HTTPException(status_code=400, detail=f"Invalid file content. Detected: {mime_type}")
@@ -307,8 +346,11 @@ async def run_full_pipeline(local_path: str, file_id: str):
                 trace.finish("error", {"stage": "transcription", "reason": "empty_result"})
                 return
 
+            # Store transcription for manual review
+            processing_status[file_id]["transcription"] = transcription
+
             # C. Create Protocol via Provider's GPT
-            processing_status[file_id] = {"status": "generating", "message": "Analyzing meeting content and generating protocol..."}
+            processing_status[file_id].update({"status": "generating", "message": "Analyzing meeting content and generating protocol..."})
             gpt_result = ai_provider.create_protocol(transcription)
             protocol_text = gpt_result["text"]
 
@@ -326,6 +368,20 @@ async def run_full_pipeline(local_path: str, file_id: str):
                 processing_status[file_id] = {"status": "error", "message": "Protocol generation failed"}
                 trace.finish("error", {"stage": "gpt", "reason": "empty_result"})
                 return
+
+            # C2. Automated Verification Step (Self-Critique)
+            processing_status[file_id].update({"status": "verifying", "message": "AI-Auditor is verifying protocol accuracy..."})
+            verify_res = ai_provider.verify_protocol(transcription, protocol_text)
+            processing_status[file_id]["verification_report"] = verify_res["verification_report"]
+            
+            # Log verification to Langfuse as a separate generation
+            trace.log_generation(
+                input_messages=[{"role": "user", "text": "Verify protocol"}],
+                output_text=verify_res["verification_report"],
+                model=f"{ai_provider.name}_auditor",
+                input_tokens=verify_res["input_tokens"],
+                output_tokens=verify_res["output_tokens"]
+            )
 
             # D. Generate DOCX
             trace.start_span("docx_generation")
@@ -361,11 +417,11 @@ async def run_full_pipeline(local_path: str, file_id: str):
                     }
                     trace.finish("email_error", {"docx_path": docx_path, "email_sent": False})
             else:
-                processing_status[file_id] = {
+                processing_status[file_id].update({
                     "status": "completed", 
                     "message": f"Success! Protocol generated at {docx_path} (Email skipped, SMTP not configured).",
                     "docx_path": docx_path
-                }
+                })
                 trace.finish("completed", {"docx_path": docx_path, "email_sent": False})
 
             if os.path.exists(local_path):

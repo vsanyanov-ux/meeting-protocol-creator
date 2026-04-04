@@ -54,6 +54,13 @@ def generate_docx(content: str) -> str:
         # Create a 4-column table
         table = doc_obj.add_table(rows=len(data), cols=4)
         table.style = 'Table Grid'
+        table.autofit = False # Enforce explicit widths
+        
+        # Set specific column widths for a corporate look
+        # Total width ≈ 17cm (21 - 2.5 - 1.5)
+        widths = [Cm(1.0), Cm(9.0), Cm(3.5), Cm(3.5)]
+        for i, width in enumerate(widths):
+            table.columns[i].width = width
         
         for r_idx, row_data in enumerate(data):
             for c_idx, cell_data in enumerate(row_data):
@@ -75,7 +82,10 @@ def generate_docx(content: str) -> str:
 
         # Table detection
         if line_stripped.startswith('|') and line_stripped.endswith('|'):
-            if '---' in line_stripped: continue
+            # Improved separator line detection: skip if it's just pipes, dashes, colons and whitespace
+            if re.match(r"^[|\-\s:]+$", line_stripped):
+                continue
+            
             cols = [col.strip() for col in line_stripped.split('|')[1:-1]]
             # Pad / Trim
             if len(cols) > 4: cols = cols[:4]

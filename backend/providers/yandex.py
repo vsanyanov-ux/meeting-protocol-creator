@@ -37,23 +37,7 @@ class YandexProvider(BaseAIProvider):
         status_updater: Callable[[str, str], None],
         trace: Any
     ) -> Optional[str]:
-        # Log: has_s3
-        has_s3 = all([self.s3_access_key, self.s3_secret_key, self.s3_bucket])
-        if has_s3:
-            status_updater("uploading", "Uploading to Yandex Object Storage...")
-            if trace: trace.start_span("s3_upload", {"bucket": self.s3_bucket})
-            object_name = f"meetings/{file_id}_{os.path.basename(audio_path)}"
-            file_url = self._upload_to_s3(audio_path, object_name)
-            if trace: trace.end_span("s3_upload", {"url_generated": bool(file_url)})
-            
-            if file_url:
-                status_updater("transcribing", "Transcribing audio (long operation)...")
-                if trace: trace.start_span("transcription_long", {"method": "async_s3"})
-                transcription = self._transcribe_long(file_url)
-                if trace: trace.end_span("transcription_long", {"chars": len(transcription) if transcription else 0})
-                return transcription
-                
-        # Fallback to chunking
+        # S3 upload disabled, falling back to chunking
         status_updater("transcribing", "Processing long audio via chunking (No S3)...")
         chunk_prefix = os.path.join(os.path.dirname(audio_path), f"chunks_{file_id}")
         if not os.path.exists(chunk_prefix):
@@ -101,10 +85,8 @@ class YandexProvider(BaseAIProvider):
         )
         try:
             s3.upload_file(file_path, self.s3_bucket, object_name)
-            url = s3.generate_presigned_url('get_object',
-                                            Params={'Bucket': self.s3_bucket, 'Key': object_name},
-                                            ExpiresIn=3600)
-            return url
+            # Use native S3 URI format for SpeechKit instead of presigned URLs
+            return f"s3://{self.s3_bucket}/{object_name}"
         except Exception as e:
             logger.error(f"S3 Upload Error: {e}")
             return None
@@ -125,16 +107,23 @@ class YandexProvider(BaseAIProvider):
 
     def _transcribe_long(self, file_url: str, lang: str = "ru-RU") -> Optional[str]:
         headers = {"Authorization": f"Api-Key {self.api_key}"}
+        # file_url is now expected to be in s3://bucket/key format
         body = {
             "config": {
                 "specification": {
-                    "languageCode": lang, "model": "general", "profanityFilter": False, "partialResults": False
+                    "languageCode": lang, 
+                    "model": "general", 
+                    "profanityFilter": False, 
+                    "partialResults": False,
+                    "audioEncoding": "OGG_OPUS",
+                    "diarizationConfig": {"enable": True}
                 }
             },
             "audio": {"uri": file_url}
         }
         try:
-            response = requests.post("https://transcription.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize", 
+            # transcribe.api is the correct, resolvable endpoint for long STT v2
+            response = requests.post("https://transcribe.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize", 
                                     headers=headers, json=body, timeout=30)
             if response.status_code != 200:
                 logger.error(f"Long STT Start Error: {response.status_code} - {response.text}")
@@ -144,7 +133,7 @@ class YandexProvider(BaseAIProvider):
             logger.error(f"Long STT Network Error: {e}")
             return None
             
-        max_retries = 360 # ~1 hour timeout total for long async STT (360 * 10 sec)
+        max_retries = 360 # ~1 hour timeout total
         attempts = 0
         while attempts < max_retries:
             time.sleep(10)
@@ -157,8 +146,14 @@ class YandexProvider(BaseAIProvider):
                 status_data = status_response.json()
                 if status_data.get("done"):
                     chunks = status_data.get("response", {}).get("chunks", [])
-                    text = " ".join([chunk.get("alternatives", [{}])[0].get("text", "") for chunk in chunks])
-                    return text
+                    
+                    full_text = []
+                    for chunk in chunks:
+                        text = chunk.get("alternatives", [{}])[0].get("text", "").strip()
+                        if text:
+                            full_text.append(text)
+                            
+                    return " ".join(full_text).strip()
             except requests.exceptions.RequestException as e:
                 logger.warning(f"Status check connection issue (attempt {attempts}): {e}")
                 
@@ -191,17 +186,87 @@ class YandexProvider(BaseAIProvider):
 
             if response.status_code == 200:
                 data = response.json()
-                try:
-                    result["text"] = data["result"]["alternatives"][0]["message"]["text"]
-                    usage = data["result"].get("usage", {})
-                    result["input_tokens"] = usage.get("inputTextTokens")
-                    result["output_tokens"] = usage.get("completionTokens")
-                except (KeyError, IndexError):
-                    logger.error(f"Malformed GPT response: {data}")
+                result["text"] = data["result"]["alternatives"][0]["message"]["text"]
+                usage = data["result"].get("usage", {})
+                result["input_tokens"] = usage.get("inputTextTokens")
+                result["output_tokens"] = usage.get("completionTokens")
             else:
                 logger.error(f"GPT Error: {response.status_code} - {response.text}")
-        except requests.exceptions.RequestException as e:
-            logger.error(f"GPT Network Error: {e}")
-            result["latency_ms"] = int((time.time() - t_start) * 1000)
+        except Exception as e:
+            logger.error(f"GPT Error: {e}")
+            
+        return result
+
+    def verify_protocol(self, transcription: str, protocol: str) -> Dict[str, Any]:
+        headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
+        system_text = (
+            "Ты — строгий корпоративный аудитор... \n"
+            "Твоя задача: Сравнить РАСШИФРОВКУ и готовый ПРОТОКОЛ. \n"
+            "Найди любые расхождения, пропущенные поручения или ошибки. \n"
+            "Выдай краткий отчет: что проверено и найдены ли критические ошибки."
+        )
+        messages = [
+            {"role": "system", "text": system_text},
+            {"role": "user", "text": f"РАСШИФРОВКА:\n{transcription}\n\nПРОТОКОЛ:\n{protocol}"}
+        ]
+        prompt = {
+            "modelUri": f"gpt://{self.folder_id}/{self.gpt_model}",
+            "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": "1000"},
+            "messages": messages
+        }
+        
+        result = {"verification_report": "Проверка не выполнена", "input_tokens": 0, "output_tokens": 0}
+        try:
+            response = requests.post(self.gpt_url, headers=headers, json=prompt, timeout=120)
+            if response.status_code == 200:
+                data = response.json()
+                result["verification_report"] = data["result"]["alternatives"][0]["message"]["text"]
+                usage = data["result"].get("usage", {})
+                result["input_tokens"] = usage.get("inputTextTokens")
+                result["output_tokens"] = usage.get("completionTokens")
+        except Exception as e:
+            logger.error(f"Verification Error: {e}")
+            
+        return result
+
+    def format_transcript_with_ai(self, transcription: str) -> Dict[str, Any]:
+        headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
+        system_text = (
+            "Ты — эксперт по лингвистическому анализу диалогов. Твоя задача: превратить сплошной текст расшифровки в структурированный диалог.\n\n"
+            "ПРАВИЛА:\n"
+            "1. Распознавай смену спикеров по смыслу, вопросам и реакции. \n"
+            "2. ОСОБОЕ ВНИМАНИЕ: Короткие наводящие вопросы ('Что дальше?', 'Как это?', 'Какой капкан?') почти всегда принадлежат ДРУГОМУ участнику (Участнику 1), который ведет беседу.\n"
+            "3. Используй метки: 'Участник 1:', 'Участник 2:'. \n"
+            "4. НЕ МЕНЯЙ СЛОВА. Только расставляй переносы строк, знаки препинания и метки спикеров.\n\n"
+            "ПРИМЕР:\n"
+            "Вход: привет как дела хорошо а у тебя тоже отлично что нового\n"
+            "Выход:\n"
+            "Участник 1: Привет. Как дела?\n"
+            "Участник 2: Хорошо. А у тебя?\n"
+            "Участник 1: Тоже отлично. Что нового?"
+        )
+        messages = [
+            {"role": "system", "text": system_text},
+            {"role": "user", "text": f"РАСШИФРОВКА (сплошной текст):\n{transcription}"}
+        ]
+        prompt = {
+            "modelUri": f"gpt://{self.folder_id}/{self.gpt_model}",
+            "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": "4000"},
+            "messages": messages
+        }
+        
+        result = {"formatted_text": transcription, "input_tokens": 0, "output_tokens": 0}
+        try:
+            response = requests.post(self.gpt_url, headers=headers, json=prompt, timeout=120)
+            if response.status_code == 200:
+                data = response.json()
+                result["formatted_text"] = data["result"]["alternatives"][0]["message"]["text"]
+                usage = data["result"].get("usage", {})
+                result["input_tokens"] = usage.get("inputTextTokens")
+                result["output_tokens"] = usage.get("completionTokens")
+            else:
+                logger.error(f"Transcript formatting error: {response.text}")
+        except Exception as e:
+            logger.error(f"Transcript formatting crash: {e}")
             
         return result

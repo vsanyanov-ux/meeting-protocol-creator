@@ -9,7 +9,10 @@ import {
   FileText, 
   Mic,
   ArrowRight,
-  FileDown
+  FileDown,
+  ChevronDown,
+  ShieldCheck,
+  Languages
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { uploadMeeting, getProcessingStatus, API_BASE_URL } from './api';
@@ -96,7 +99,7 @@ const App = () => {
 
   const currentStepIndex = () => {
     if (!status) return 0;
-    const steps = ['starting', 'uploading', 'transcribing', 'generating', 'emailing', 'completed'];
+    const steps = ['starting', 'uploading', 'transcribing', 'generating', 'verifying', 'emailing', 'completed'];
     const idx = steps.indexOf(status.status);
     return idx === -1 ? 0 : idx;
   };
@@ -224,11 +227,18 @@ const App = () => {
                     isComplete={currentStepIndex() > 3}
                   />
                   <StatusStep 
+                    title="Верификация" 
+                    desc="AI-Аудитор проверяет точность протокола" 
+                    icon={<ShieldCheck size={18} />}
+                    isActive={status?.status === 'verifying'}
+                    isComplete={currentStepIndex() > 4}
+                  />
+                  <StatusStep 
                     title="Отправка" 
                     desc="Формируем DOCX и отправляем на email" 
                     icon={<Mail size={18} />}
                     isActive={status?.status === 'emailing'}
-                    isComplete={currentStepIndex() > 4}
+                    isComplete={currentStepIndex() > 5}
                   />
                 </div>
 
@@ -236,12 +246,12 @@ const App = () => {
                   <motion.div 
                     initial={{ opacity: 0, y: 10 }}
                     animate={{ opacity: 1, y: 0 }}
-                    style={{ marginTop: '3rem', textAlign: 'center' }}
+                    style={{ marginTop: '3rem' }}
                   >
-                    <div style={{ color: 'var(--secondary)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
+                    <div style={{ textAlign: 'center', color: 'var(--secondary)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
                       <CheckCircle2 size={48} />
-                      <h3 style={{ fontSize: '1.5rem' }}>Готово!</h3>
-                      <p style={{ color: 'var(--text-muted)' }}>Протокол успешно отправлен на вашу почту.</p>
+                      <h3 style={{ fontSize: '1.5rem' }}>Протокол готов!</h3>
+                      <p style={{ color: 'var(--text-muted)' }}>Файл сформирован и доступен для скачивания.</p>
                       <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem', flexWrap: 'wrap', justifyContent: 'center' }}>
                         <a 
                           href={`${API_BASE_URL}/download/${fileId}`} 
@@ -255,6 +265,28 @@ const App = () => {
                           Новый файл
                         </button>
                       </div>
+                    </div>
+
+                    {/* Results Transparency Section */}
+                    <div style={{ marginTop: '4rem', paddingTop: '2rem', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '2rem', color: 'var(--primary)' }}>
+                        <ShieldCheck size={20} />
+                        <h4 style={{ margin: 0, fontSize: '1.1rem' }}>Прозрачность и верификация</h4>
+                      </div>
+                      
+                      <Accordion 
+                        title="Отчет AI-Аудитора" 
+                        icon={<ShieldCheck size={18} />}
+                        content={status.verification_report}
+                        type="verification"
+                      />
+                      
+                      <Accordion 
+                        title="Полная расшифровка текста" 
+                        icon={<Languages size={18} />}
+                        content={status.transcription}
+                        type="transcription"
+                      />
                     </div>
                   </motion.div>
                 )}
@@ -292,5 +324,44 @@ const StatusStep = ({ title, desc, icon, isActive, isComplete }) => (
     {isActive && <Loader2 className="animate-spin" size={18} color="var(--primary)" />}
   </div>
 );
+
+const Accordion = ({ title, icon, content, type }) => {
+  const [isOpen, setIsOpen] = useState(false);
+  
+  if (!content) return null;
+
+  return (
+    <div className={`glass-accordion ${isOpen ? 'open' : ''}`} style={{ marginBottom: '1rem' }}>
+      <button 
+        onClick={() => setIsOpen(!isOpen)}
+        style={{ width: '100%', background: 'none', border: 'none', padding: '1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer', color: 'white' }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          <span style={{ color: type === 'verification' ? 'var(--secondary)' : 'var(--primary)' }}>{icon}</span>
+          <span style={{ fontWeight: 500 }}>{title}</span>
+        </div>
+        <motion.div animate={{ rotate: isOpen ? 180 : 0 }}>
+          <ChevronDown size={20} />
+        </motion.div>
+      </button>
+      <AnimatePresence>
+        {isOpen && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            style={{ overflow: 'hidden' }}
+          >
+            <div style={{ padding: '0 1.5rem 1.5rem', color: 'var(--text-muted)', fontSize: '0.925rem', lineHeight: '1.6', whiteSpace: 'pre-wrap' }}>
+              <div style={{ padding: '1rem', background: 'rgba(0,0,0,0.2)', borderRadius: 8, borderLeft: `3px solid ${type === 'verification' ? 'var(--secondary)' : 'var(--primary)'}` }}>
+                {content}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
 
 export default App;

@@ -29,3 +29,19 @@ class BaseAIProvider(ABC):
         Returns dict with: text (str), latency_ms (int), input_tokens (int), output_tokens (int), messages (list)
         """
         pass
+
+    @abstractmethod
+    def verify_protocol(self, transcription: str, protocol: str) -> Dict[str, Any]:
+        """
+        Verify protocol against transcription.
+        Returns dict with: verification_report (str), input_tokens (int), output_tokens (int)
+        """
+        pass
+
+    @abstractmethod
+    def format_transcript_with_ai(self, transcription: str) -> Dict[str, Any]:
+        """
+        Add speaker labels to raw text using LLM context.
+        Returns dict with: formatted_text (str), input_tokens (int), output_tokens (int)
+        """
+        pass
