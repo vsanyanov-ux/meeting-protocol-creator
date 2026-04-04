@@ -1,7 +1,8 @@
 import os
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, FileResponse
+import urllib.parse
 from dotenv import load_dotenv
 import shutil
 import uuid
@@ -94,6 +95,31 @@ async def get_status(file_id: str):
     if not status:
         raise HTTPException(status_code=404, detail="Processing task not found")
     return status
+
+@app.get("/download/{file_id}")
+async def download_protocol(file_id: str):
+    """Download the generated DOCX file."""
+    status = processing_status.get(file_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="File ID not found")
+    
+    if status.get("status") != "completed" and "docx_path" not in status:
+        raise HTTPException(status_code=400, detail="Protocol is not ready yet")
+        
+    docx_path = status.get("docx_path")
+    if not docx_path or not os.path.exists(docx_path):
+        raise HTTPException(status_code=404, detail="DOCX file not found on server")
+        
+    filename = os.path.basename(docx_path)
+    # RFC 5987: properly encode non-ASCII characters in filename
+    encoded_filename = urllib.parse.quote(filename)
+    
+    return FileResponse(
+        path=docx_path, 
+        filename=filename, 
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+    )
 
 
 from pydantic import BaseModel, Field
@@ -269,13 +295,25 @@ async def run_full_pipeline(local_path: str, file_id: str):
             trace.end_span("email_send", {"success": success, "recipient": recipient})
 
             if success:
-                processing_status[file_id] = {"status": "completed", "message": "Success! The protocol has been sent to your email."}
+                processing_status[file_id] = {
+                    "status": "completed", 
+                    "message": "Success! The protocol has been sent to your email.",
+                    "docx_path": docx_path
+                }
                 trace.finish("completed", {"docx_path": docx_path, "email_sent": True})
             else:
-                processing_status[file_id] = {"status": "error", "message": "Failed to send email. Process complete but delivery failed."}
+                processing_status[file_id] = {
+                    "status": "error", 
+                    "message": "Failed to send email. Process complete but delivery failed.",
+                    "docx_path": docx_path # Добавляем путь даже если email не ушел, чтобы можно было скачать
+                }
                 trace.finish("email_error", {"docx_path": docx_path, "email_sent": False})
         else:
-            processing_status[file_id] = {"status": "completed", "message": f"Success! Protocol generated at {docx_path} (Email skipped, SMTP not configured)."}
+            processing_status[file_id] = {
+                "status": "completed", 
+                "message": f"Success! Protocol generated at {docx_path} (Email skipped, SMTP not configured).",
+                "docx_path": docx_path
+            }
             trace.finish("completed", {"docx_path": docx_path, "email_sent": False})
 
         if os.path.exists(local_path):

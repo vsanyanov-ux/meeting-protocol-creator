@@ -8,10 +8,11 @@ import {
   Mail, 
   FileText, 
   Mic,
-  ArrowRight
+  ArrowRight,
+  FileDown
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { uploadMeeting, getProcessingStatus } from './api';
+import { uploadMeeting, getProcessingStatus, API_BASE_URL } from './api';
 
 const App = () => {
   const [file, setFile] = useState(null);
@@ -238,9 +239,19 @@ const App = () => {
                       <CheckCircle2 size={48} />
                       <h3 style={{ fontSize: '1.5rem' }}>Готово!</h3>
                       <p style={{ color: 'var(--text-muted)' }}>Протокол успешно отправлен на вашу почту.</p>
-                      <button className="btn btn-primary" style={{ marginTop: '1.5rem', width: 'auto' }} onClick={reset}>
-                        Создать еще один
-                      </button>
+                      <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem', flexWrap: 'wrap', justifyContent: 'center' }}>
+                        <a 
+                          href={`${API_BASE_URL}/download/${fileId}`} 
+                          className="btn" 
+                          style={{ background: 'var(--secondary)', color: 'white', display: 'flex', alignItems: 'center', gap: '0.5rem', textDecoration: 'none', width: 'auto', padding: '0.75rem 1.5rem', borderRadius: 12, fontWeight: 500 }}
+                          download
+                        >
+                          <FileDown size={18} /> Скачать DOCX
+                        </a>
+                        <button className="btn btn-primary" style={{ width: 'auto' }} onClick={reset}>
+                          Новый файл
+                        </button>
+                      </div>
                     </div>
                   </motion.div>
                 )}
