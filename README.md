@@ -20,22 +20,22 @@
 
 ```mermaid
 graph TD
-    User[👤 Пользователь] -->|Browser| Proxy[🌐 Nginx Proxy (Port 90)]
-    Proxy -->|Static Assets| Frontend[⚛️ Frontend: React]
-    Proxy -->|API Proxy /api| Backend[🐍 Backend: FastAPI]
+    User["👤 Пользователь"] -->|Browser| Proxy["🌐 Nginx Proxy (Port 90)"]
+    Proxy -->|Static Assets| Frontend["⚛️ Frontend: React"]
+    Proxy -->|"API Proxy /api"| Backend["🐍 Backend: FastAPI"]
     
     subgraph "Backend Layer (Docker)"
-        Backend -->|MIME Validation| Magic[🛡️ Magic Check]
-        Backend -->|Normalization| FFmpeg[🎵 FFmpeg]
-        FFmpeg -->|Speech-to-Text| SpeechKit[☁️ Yandex SpeechKit]
-        SpeechKit -->|LLM Optimization| GPT[🤖 Yandex GPT]
-        GPT -->|Document Generation| Docx[📄 Python-docx]
+        Backend -->|"MIME Validation"| Magic["🛡️ Magic Check"]
+        Backend -->|Normalization| FFmpeg["🎵 FFmpeg"]
+        FFmpeg -->|"Speech-to-Text"| SpeechKit["☁️ Yandex SpeechKit"]
+        SpeechKit -->|"LLM Optimization"| GPT["🤖 Yandex GPT"]
+        GPT -->|"Document Generation"| Docx["📄 Python-docx"]
     end
     
-    Docx -->|SMTP| Email[📧 Email Service]
-    Docx -->|Storage| Disk[💾 /temp_protocols]
+    Docx -->|SMTP| Email["📧 Email Service"]
+    Docx -->|Storage| Disk["💾 /temp_protocols"]
     
-    Email --> Done[🏁 Готовый протокол]
+    Email --> Done["🏁 Готовый протокол"]
     Disk --> Done
 ```
 
