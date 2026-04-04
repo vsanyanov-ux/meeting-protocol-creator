@@ -20,16 +20,23 @@
 
 ```mermaid
 graph TD
-    A[Пользователь] -->|Загрузка Audio| B(Frontend: React)
-    B -->|POST /process-meeting| C(Backend: FastAPI)
-    C -->|FFmpeg| D[Конвертация в OggOpus]
-    D -->|SpeechKit API| E[Расшифровка текста]
-    E -->|Yandex GPT API| F[Генерация протокола]
-    F -->|Python-docx| G[Создание DOCX с таблицами]
-    G -->|SMTP| H[Отправка на Email]
-    G -->|Local Store| I[Папка temp_protocols]
-    H --> J[Готовый протокол]
-    I --> J
+    User[👤 Пользователь] -->|Browser| Proxy[🌐 Nginx Proxy (Port 90)]
+    Proxy -->|Static Assets| Frontend[⚛️ Frontend: React]
+    Proxy -->|API Proxy /api| Backend[🐍 Backend: FastAPI]
+    
+    subgraph "Backend Layer (Docker)"
+        Backend -->|MIME Validation| Magic[🛡️ Magic Check]
+        Backend -->|Normalization| FFmpeg[🎵 FFmpeg]
+        FFmpeg -->|Speech-to-Text| SpeechKit[☁️ Yandex SpeechKit]
+        SpeechKit -->|LLM Optimization| GPT[🤖 Yandex GPT]
+        GPT -->|Document Generation| Docx[📄 Python-docx]
+    end
+    
+    Docx -->|SMTP| Email[📧 Email Service]
+    Docx -->|Storage| Disk[💾 /temp_protocols]
+    
+    Email --> Done[🏁 Готовый протокол]
+    Disk --> Done
 ```
 
 ---
@@ -41,16 +48,25 @@ graph TD
 
 ---
 
-## 🚀 Как запустить
+## 🚀 Как запустить (Docker - Рекомендуется)
 
-### Бэкенд
-1. Установите зависимости: `pip install -r requirements.txt`
-2. Настройте `.env` (API ключи Yandex Cloud).
-3. Запустите сервер: `python -m uvicorn main:app --port 8000`
+Самый простой и надежный способ запустить проект — использовать Docker Compose.
 
-### Фронтенд
-1. Установите зависимости: `npm install`
-2. Запустите в режиме разработки: `npm run dev -- --port 5177`
+1.  **Настройка окружения:** Убедитесь, что в папке `backend/.env` прописаны ваши ключи (Yandex Cloud API Key, Folder ID и др.).
+2.  **Запуск:** В корне проекта выполните команду:
+    ```bash
+    docker-compose up -d --build
+    ```
+3.  **Доступ:**
+    *   **Frontend:** [http://localhost:90](http://localhost:90) 🌐
+    *   **Backend API:** [http://localhost:8000/docs](http://localhost:8000/docs) (Swagger UI) 📑
+    *   **Health Check:** [http://localhost:8000/health](http://localhost:8000/health) 🩺
+
+### Ручной запуск (Dev)
+
+Если вы хотите запустить проект без Docker:
+1.  **Бэкенд:** `cd backend`, `pip install -r requirements.txt`, `python -m uvicorn main:app --port 8000`
+2.  **Фронтенд:** `cd frontend`, `npm install`, `npm run dev -- --port 90` (предварительно поменяв API URL в `api.js`)
 
 ---
 
