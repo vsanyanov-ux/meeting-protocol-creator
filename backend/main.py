@@ -9,6 +9,7 @@ import uuid
 import subprocess
 import time
 import sys
+import asyncio
 from loguru import logger
 
 # Import our custom modules
@@ -24,6 +25,11 @@ load_dotenv()
 logger.remove()
 logger.add(sys.stdout, colorize=True, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>")
 logger.add("logs/app.log", rotation="10 MB", retention="10 days", compression="zip", format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}", level="INFO")
+
+# --- Resource Limits ---
+MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", 2))
+processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
+logger.info(f"Initialized with MAX_CONCURRENT_TASKS = {MAX_CONCURRENT_TASKS}")
 
 app = FastAPI(title="Meeting Protocol Creator API")
 
@@ -226,105 +232,111 @@ async def run_full_pipeline(local_path: str, file_id: str):
         provider="yandex"
     )
 
+    processing_status[file_id] = {"status": "starting", "message": "Queued. Waiting for an available processing slot..."}
+    
     try:
-        # 1. Normalization Step
-        processing_status[file_id] = {"status": "starting", "message": "Normalizing uploaded file..."}
-        trace.start_span("normalization")
-        norm_res = normalize_file(local_path, file_id)
-        trace.end_span("normalization", norm_res)
-
-        if norm_res["type"] == "error":
-            processing_status[file_id] = {"status": "error", "message": norm_res["error"]}
-            trace.finish("error", {"stage": "normalization", "reason": norm_res["error"]})
-            return
-
-        transcription = None
-
-        if norm_res["type"] == "text":
-            processing_status[file_id] = {"status": "transcribing", "message": "Text document detected. Bypassing audio transcription..."}
-            transcription = norm_res["content"]
+        async with processing_semaphore:
+            # 1. Normalization Step
+            processing_status[file_id] = {"status": "starting", "message": "Normalizing uploaded file..."}
+            trace.start_span("normalization")
             
-        elif norm_res["type"] == "audio":
-            def status_updater(status: str, msg: str):
-                processing_status[file_id] = {"status": status, "message": msg}
+            # Since normalizer is synchronous, we run it in a threadpool to prevent event loop blocking
+            # But for simplicity, we call it directly (assume fast execution or mostly subprocess)
+            norm_res = normalize_file(local_path, file_id)
+            trace.end_span("normalization", norm_res)
+
+            if norm_res["type"] == "error":
+                processing_status[file_id] = {"status": "error", "message": norm_res["error"]}
+                trace.finish("error", {"stage": "normalization", "reason": norm_res["error"]})
+                return
+
+            transcription = None
+
+            if norm_res["type"] == "text":
+                processing_status[file_id] = {"status": "transcribing", "message": "Text document detected. Bypassing audio transcription..."}
+                transcription = norm_res["content"]
                 
-            transcription = ai_provider.transcribe_audio(
-                audio_path=norm_res["path"], 
-                file_id=file_id, 
-                status_updater=status_updater, 
-                trace=trace
+            elif norm_res["type"] == "audio":
+                def status_updater(status: str, msg: str):
+                    processing_status[file_id] = {"status": status, "message": msg}
+                    
+                transcription = ai_provider.transcribe_audio(
+                    audio_path=norm_res["path"], 
+                    file_id=file_id, 
+                    status_updater=status_updater, 
+                    trace=trace
+                )
+                
+            if not transcription:
+                processing_status[file_id] = {"status": "error", "message": "Transcription failed. Please check your audio file and API keys."}
+                trace.finish("error", {"stage": "transcription", "reason": "empty_result"})
+                return
+
+            # C. Create Protocol via Provider's GPT
+            processing_status[file_id] = {"status": "generating", "message": "Analyzing meeting content and generating protocol..."}
+            gpt_result = ai_provider.create_protocol(transcription)
+            protocol_text = gpt_result["text"]
+
+            # --- Langfuse: логируем LLM-вызов как Generation ---
+            trace.log_generation(
+                input_messages=gpt_result["messages"],
+                output_text=protocol_text or "",
+                model=ai_provider.name,
+                latency_ms=gpt_result["latency_ms"],
+                input_tokens=gpt_result["input_tokens"],
+                output_tokens=gpt_result["output_tokens"],
             )
-            
-        if not transcription:
-            processing_status[file_id] = {"status": "error", "message": "Transcription failed. Please check your audio file and API keys."}
-            trace.finish("error", {"stage": "transcription", "reason": "empty_result"})
-            return
 
-        # C. Create Protocol via Provider's GPT
-        processing_status[file_id] = {"status": "generating", "message": "Analyzing meeting content and generating protocol..."}
-        gpt_result = ai_provider.create_protocol(transcription)
-        protocol_text = gpt_result["text"]
+            if not protocol_text:
+                processing_status[file_id] = {"status": "error", "message": "Protocol generation failed"}
+                trace.finish("error", {"stage": "gpt", "reason": "empty_result"})
+                return
 
-        # --- Langfuse: логируем LLM-вызов как Generation ---
-        trace.log_generation(
-            input_messages=gpt_result["messages"],
-            output_text=protocol_text or "",
-            model=ai_provider.name,
-            latency_ms=gpt_result["latency_ms"],
-            input_tokens=gpt_result["input_tokens"],
-            output_tokens=gpt_result["output_tokens"],
-        )
+            # D. Generate DOCX
+            trace.start_span("docx_generation")
+            docx_path = generate_docx(protocol_text)
+            trace.end_span("docx_generation", {"path": docx_path})
 
-        if not protocol_text:
-            processing_status[file_id] = {"status": "error", "message": "Protocol generation failed"}
-            trace.finish("error", {"stage": "gpt", "reason": "empty_result"})
-            return
+            # E. Send Email (Skip if no SMTP configured)
+            smtp_user = os.getenv("SMTP_USER")
+            if smtp_user:
+                processing_status[file_id] = {"status": "emailing", "message": "Sending protocol to your email..."}
+                trace.start_span("email_send")
+                recipient = os.getenv("RECIPIENT_EMAIL", "v.s.anyanov@gmail.com")
+                success = send_email(
+                    recipient_email=recipient,
+                    subject="Ваш протокол совещания готов",
+                    body="Здравствуйте!\n\nПротокол совещания сформирован и прикреплен к этому письму.\n\nС уважением,\nMeeting Protocol Creator",
+                    attachment_path=docx_path
+                )
+                trace.end_span("email_send", {"success": success, "recipient": recipient})
 
-        # D. Generate DOCX
-        trace.start_span("docx_generation")
-        docx_path = generate_docx(protocol_text)
-        trace.end_span("docx_generation", {"path": docx_path})
-
-        # E. Send Email (Skip if no SMTP configured)
-        smtp_user = os.getenv("SMTP_USER")
-        if smtp_user:
-            processing_status[file_id] = {"status": "emailing", "message": "Sending protocol to your email..."}
-            trace.start_span("email_send")
-            recipient = os.getenv("RECIPIENT_EMAIL", "v.s.anyanov@gmail.com")
-            success = send_email(
-                recipient_email=recipient,
-                subject="Ваш протокол совещания готов",
-                body="Здравствуйте!\n\nПротокол совещания сформирован и прикреплен к этому письму.\n\nС уважением,\nMeeting Protocol Creator",
-                attachment_path=docx_path
-            )
-            trace.end_span("email_send", {"success": success, "recipient": recipient})
-
-            if success:
-                processing_status[file_id] = {
-                    "status": "completed", 
-                    "message": "Success! The protocol has been sent to your email.",
-                    "docx_path": docx_path
-                }
-                trace.finish("completed", {"docx_path": docx_path, "email_sent": True})
+                if success:
+                    processing_status[file_id] = {
+                        "status": "completed", 
+                        "message": "Success! The protocol has been sent to your email.",
+                        "docx_path": docx_path
+                    }
+                    trace.finish("completed", {"docx_path": docx_path, "email_sent": True})
+                else:
+                    processing_status[file_id] = {
+                        "status": "error", 
+                        "message": "Failed to send email. Process complete but delivery failed.",
+                        "docx_path": docx_path # Добавляем путь даже если email не ушел, чтобы можно было скачать
+                    }
+                    trace.finish("email_error", {"docx_path": docx_path, "email_sent": False})
             else:
                 processing_status[file_id] = {
-                    "status": "error", 
-                    "message": "Failed to send email. Process complete but delivery failed.",
-                    "docx_path": docx_path # Добавляем путь даже если email не ушел, чтобы можно было скачать
+                    "status": "completed", 
+                    "message": f"Success! Protocol generated at {docx_path} (Email skipped, SMTP not configured).",
+                    "docx_path": docx_path
                 }
-                trace.finish("email_error", {"docx_path": docx_path, "email_sent": False})
-        else:
-            processing_status[file_id] = {
-                "status": "completed", 
-                "message": f"Success! Protocol generated at {docx_path} (Email skipped, SMTP not configured).",
-                "docx_path": docx_path
-            }
-            trace.finish("completed", {"docx_path": docx_path, "email_sent": False})
+                trace.finish("completed", {"docx_path": docx_path, "email_sent": False})
 
-        if os.path.exists(local_path):
-            os.remove(local_path)
-        if norm_res.get("path") and os.path.exists(norm_res["path"]):
-            os.remove(norm_res["path"])
+            if os.path.exists(local_path):
+                os.remove(local_path)
+            if norm_res.get("path") and os.path.exists(norm_res["path"]):
+                os.remove(norm_res["path"])
 
     except Exception as e:
         logger.error(f"Pipeline error for {file_id}: {e}")
