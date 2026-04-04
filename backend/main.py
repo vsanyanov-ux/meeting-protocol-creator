@@ -7,8 +7,9 @@ from dotenv import load_dotenv
 import shutil
 import uuid
 import subprocess
-import logging
 import time
+import sys
+from loguru import logger
 
 # Import our custom modules
 from providers.base import BaseAIProvider
@@ -20,11 +21,9 @@ from normalizer import normalize_file
 load_dotenv()
 
 # Logging setup
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
-logger = logging.getLogger(__name__)
+logger.remove()
+logger.add(sys.stdout, colorize=True, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>")
+logger.add("logs/app.log", rotation="10 MB", retention="10 days", compression="zip", format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}", level="INFO")
 
 app = FastAPI(title="Meeting Protocol Creator API")
 

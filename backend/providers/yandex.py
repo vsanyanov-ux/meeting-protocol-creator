@@ -2,17 +2,13 @@ import os
 import time
 import requests
 import json
-import logging
 import boto3
 import shutil
 import subprocess
 from typing import Optional, List, Dict, Any, Callable
+from loguru import logger
 
 from .base import BaseAIProvider
-
-# Setting up logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 class YandexProvider(BaseAIProvider):
     def __init__(self, api_key: str, folder_id: str, 

@@ -13,10 +13,8 @@ Langfuse LLM Observability Client
 
 import os
 import time
-import logging
 from typing import Optional, Any
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 # Глобальный инстанс Langfuse (создаётся один раз)
 _langfuse_instance = None

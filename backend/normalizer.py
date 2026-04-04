@@ -1,9 +1,7 @@
 import os
 import subprocess
-import logging
 from typing import Dict, Any
-
-logger = logging.getLogger(__name__)
+from loguru import logger
 
 def extract_text_from_pdf(filepath: str) -> str:
     import pdfplumber

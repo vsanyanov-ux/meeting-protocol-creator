@@ -1,7 +1,7 @@
 import os
 import smtplib
 from email.message import EmailMessage
-import logging
+from loguru import logger
 
 def send_email(recipient_email: str, subject: str, body: str, attachment_path: str):
     """Send an email with an attachment."""
@@ -29,8 +29,8 @@ def send_email(recipient_email: str, subject: str, body: str, attachment_path: s
             server.starttls()
             server.login(smtp_user, smtp_password)
             server.send_message(msg)
-            logging.info(f"Email successfully sent to {recipient_email}")
+            logger.info(f"Email successfully sent to {recipient_email}")
             return True
     except Exception as e:
-        logging.error(f"Failed to send email: {e}")
+        logger.error(f"Failed to send email: {e}")
         return False
