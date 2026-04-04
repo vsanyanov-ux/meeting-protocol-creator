@@ -10,7 +10,7 @@ import subprocess
 import logging
 
 # Import our custom modules
-from yandex_client import YandexClient
+from providers.base import BaseAIProvider
 from protocol_generator import generate_docx
 from email_client import send_email
 from langfuse_client import PipelineTrace, submit_score
@@ -52,15 +52,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize Yandex Client
-yandex_client = YandexClient(
-    api_key=os.getenv("YANDEX_API_KEY"),
-    folder_id=os.getenv("YANDEX_FOLDER_ID"),
-    s3_access_key=os.getenv("YANDEX_ACCESS_KEY"),
-    s3_secret_key=os.getenv("YANDEX_SECRET_KEY"),
-    s3_bucket=os.getenv("YANDEX_S3_BUCKET"),
-    gpt_model=os.getenv("YANDEX_GPT_MODEL", "yandexgpt/latest")
-)
+def get_provider() -> BaseAIProvider:
+    provider_type = os.getenv("AI_PROVIDER", "yandex").lower()
+    
+    if provider_type == "yandex":
+        from providers.yandex import YandexProvider
+        return YandexProvider(
+            api_key=os.getenv("YANDEX_API_KEY"),
+            folder_id=os.getenv("YANDEX_FOLDER_ID"),
+            s3_access_key=os.getenv("YANDEX_ACCESS_KEY"),
+            s3_secret_key=os.getenv("YANDEX_SECRET_KEY"),
+            s3_bucket=os.getenv("YANDEX_S3_BUCKET"),
+            gpt_model=os.getenv("YANDEX_GPT_MODEL", "yandexgpt/latest")
+        )
+    # elif provider_type == "local":
+    #     from providers.local_whisper import LocalProvider
+    #     return LocalProvider()
+    else:
+        raise ValueError(f"Unknown AI_PROVIDER: {provider_type}")
+
+ai_provider = get_provider()
 
 UPLOAD_DIR = "uploads"
 PROTOCOLS_DIR = "temp_protocols"
@@ -208,82 +219,31 @@ async def run_full_pipeline(local_path: str, file_id: str):
             transcription = norm_res["content"]
             
         elif norm_res["type"] == "audio":
-            # Use the normalized audio path for all STT logic
-            target_audio_path = norm_res["path"]
+            def status_updater(status: str, msg: str):
+                processing_status[file_id] = {"status": status, "message": msg}
+                
+            transcription = ai_provider.transcribe_audio(
+                audio_path=norm_res["path"], 
+                file_id=file_id, 
+                status_updater=status_updater, 
+                trace=trace
+            )
             
-            # A. Upload to S3 & Transcribe
-            has_s3 = all([yandex_client.s3_access_key, yandex_client.s3_secret_key, yandex_client.s3_bucket])
-
-            if has_s3:
-                processing_status[file_id] = {"status": "uploading", "message": "Uploading to secure cloud storage..."}
-                trace.start_span("s3_upload", {"bucket": yandex_client.s3_bucket})
-                object_name = f"meetings/{file_id}_{os.path.basename(target_audio_path)}"
-                file_url = yandex_client.upload_to_s3(target_audio_path, object_name)
-                trace.end_span("s3_upload", {"url_generated": bool(file_url)})
-
-            if file_url:
-                processing_status[file_id] = {"status": "transcribing", "message": "Transcribing audio (long operation)..."}
-                trace.start_span("transcription_long", {"method": "async_s3"})
-                transcription = yandex_client.transcribe_long(file_url)
-                trace.end_span("transcription_long", {"chars": len(transcription) if transcription else 0})
-
-        # B. Fallback to chunked transcription if no S3 (only for audio)
-        if not transcription and norm_res["type"] == "audio":
-            processing_status[file_id] = {"status": "transcribing", "message": "Processing long audio via chunking (No S3)..."}
-            
-            # 1. Create a workspace for chunks
-            chunk_prefix = os.path.join(UPLOAD_DIR, f"chunks_{file_id}")
-            if not os.path.exists(chunk_prefix):
-                os.makedirs(chunk_prefix)
-            
-            try:
-                # 2. Split normalized audio into 25-second chunks
-                subprocess.run([
-                    "ffmpeg", "-y", "-i", target_audio_path, 
-                    "-f", "segment", "-segment_time", "25",
-                    "-c", "copy", # Already Opus from normalizer
-                    os.path.join(chunk_prefix, "chunk_%03d.ogg")
-                ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                
-                # 3. Transcribe each chunk
-                chunk_files = sorted([f for f in os.listdir(chunk_prefix) if f.endswith(".ogg")])
-                transcription_parts = []
-                
-                for i, chunk_file in enumerate(chunk_files):
-                    processing_status[file_id] = {"status": "transcribing", "message": f"Transcribing segment {i+1} of {len(chunk_files)}..."}
-                    chunk_path = os.path.join(chunk_prefix, chunk_file)
-                    with open(chunk_path, "rb") as f:
-                        chunk_bytes = f.read()
-                    
-                    part = yandex_client.transcribe_short(chunk_bytes)
-                    if part:
-                        transcription_parts.append(part)
-                
-                transcription = " ".join(transcription_parts)
-                
-            except Exception as e:
-                logger.error(f"Chunking/Transcription error: {e}")
-                trace.end_span("transcription_chunked", {"error": str(e)}, level="ERROR")
-            finally:
-                # Cleanup chunks
-                if os.path.exists(chunk_prefix):
-                    shutil.rmtree(chunk_prefix)
-
         if not transcription:
             processing_status[file_id] = {"status": "error", "message": "Transcription failed. Please check your audio file and API keys."}
             trace.finish("error", {"stage": "transcription", "reason": "empty_result"})
             return
 
-        # C. Create Protocol via Yandex GPT
+        # C. Create Protocol via Provider's GPT
         processing_status[file_id] = {"status": "generating", "message": "Analyzing meeting content and generating protocol..."}
-        gpt_result = yandex_client.create_protocol(transcription)
+        gpt_result = ai_provider.create_protocol(transcription)
         protocol_text = gpt_result["text"]
 
         # --- Langfuse: логируем LLM-вызов как Generation ---
         trace.log_generation(
             input_messages=gpt_result["messages"],
             output_text=protocol_text or "",
-            model=yandex_client.gpt_model,
+            model=ai_provider.name,
             latency_ms=gpt_result["latency_ms"],
             input_tokens=gpt_result["input_tokens"],
             output_tokens=gpt_result["output_tokens"],

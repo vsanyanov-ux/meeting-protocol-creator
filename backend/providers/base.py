@@ -1,0 +1,31 @@
+from abc import ABC, abstractmethod
+from typing import Dict, Any, Optional, Callable
+
+class BaseAIProvider(ABC):
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """Name of the provider"""
+        pass
+
+    @abstractmethod
+    def transcribe_audio(
+        self, 
+        audio_path: str, 
+        file_id: str, 
+        status_updater: Callable[[str, str], None],
+        trace: Any
+    ) -> Optional[str]:
+        """
+        Transcribe audio file to text.
+        Provider is responsible for any chunking or cloud uploads needed.
+        """
+        pass
+
+    @abstractmethod
+    def create_protocol(self, transcription: str) -> Dict[str, Any]:
+        """
+        Generate protocol from text.
+        Returns dict with: text (str), latency_ms (int), input_tokens (int), output_tokens (int), messages (list)
+        """
+        pass
