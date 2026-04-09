@@ -15,7 +15,7 @@
 
 ## 📊 Архитектура и Процесс (v2.0)
 
-`mermaid
+```mermaid
 graph TD
     User["👤 Пользователь"] -->|Browser| Proxy["🌐 Nginx Proxy (Port 90)"]
     Proxy -->|Static Assets| Frontend["⚛️ Frontend: React"]
@@ -39,7 +39,7 @@ graph TD
     
     Email --> Done["🏁 Готовый протокол"]
     Disk --> Done
-`
+```
 
 ---
 
