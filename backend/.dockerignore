@@ -10,3 +10,4 @@ uploads/
 logs/
 temp_protocols/
 mcp_debug.log
+models_cache/

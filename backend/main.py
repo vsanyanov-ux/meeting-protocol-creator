@@ -97,9 +97,13 @@ def get_provider() -> BaseAIProvider:
             s3_bucket=os.getenv("YANDEX_S3_BUCKET"),
             gpt_model=os.getenv("YANDEX_GPT_MODEL", "yandexgpt/latest")
         )
-    # elif provider_type == "local":
-    #     from providers.local_whisper import LocalProvider
-    #     return LocalProvider()
+    elif provider_type == "local":
+        from providers.local import LocalProvider
+        return LocalProvider(
+            whisper_model_size=os.getenv("WHISPER_MODEL", "medium"),
+            ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
+            ollama_model=os.getenv("OLLAMA_MODEL", "qwen3:7b")
+        )
     else:
         raise ValueError(f"Unknown AI_PROVIDER: {provider_type}")
 

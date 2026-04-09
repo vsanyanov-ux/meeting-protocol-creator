@@ -6,7 +6,7 @@ build/
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
+*.class
 venv/
 .venv/
 env/
@@ -28,6 +28,12 @@ temp_protocols/
 *.mp3
 *.wav
 *.m4a
+
+# AI Models and Data
+backend/models_cache/
+ollama_data/
+backend/Test Audio/
+test_meeting_30s.mp4
 
 # Logs
 *.log

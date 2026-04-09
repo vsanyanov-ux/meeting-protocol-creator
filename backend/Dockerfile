@@ -1,23 +1,35 @@
 # Use an official Python runtime as a parent image
-FROM python:3.11-slim
+FROM python:3.11
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     libmagic1 \
+    libgomp1 \
+    build-essential \
+    cmake \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory in the container
 WORKDIR /app
 
-# Create a non-root user and group
-RUN groupadd -r appgroup && useradd -r -g appgroup appuser
+# Point HuggingFace to a writable directory within /app
+ENV HF_HOME=/app/models_cache/huggingface
+ENV XDG_CACHE_HOME=/app/models_cache/xdg
+
+# Create a non-root user and group with a home directory
+RUN groupadd -r appgroup && useradd -m -r -g appgroup appuser
 
 # Copy the requirements file into the container
 COPY requirements.txt .
 
 # Install any needed packages
-RUN pip install --no-cache-dir -r requirements.txt
+# Install packages in chunks to avoid Out of Memory during build
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir fastapi uvicorn pydantic python-dotenv loguru httpx && \
+    pip install --no-cache-dir faster-whisper==1.2.1 ollama==0.6.1 && \
+    pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application code
 COPY . .
