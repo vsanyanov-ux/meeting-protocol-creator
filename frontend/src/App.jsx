@@ -23,6 +23,7 @@ const App = () => {
   const [status, setStatus] = useState(null); // { status: '', message: '' }
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [recipientEmail, setRecipientEmail] = useState('v.s.anyanov@gmail.com');
   const fileInputRef = useRef(null);
 
   // Poll status when fileId is present
@@ -61,7 +62,7 @@ const App = () => {
     setStatus(null);
     
     try {
-      const result = await uploadMeeting(file);
+      const result = await uploadMeeting(file, recipientEmail);
       setFileId(result.file_id);
     } catch (err) {
       setError(err.response?.data?.detail || "Ошибка при загрузке файла. Убедитесь, что бэкенд запущен.");
@@ -173,6 +174,23 @@ const App = () => {
                 )}
 
                 <div style={{ marginTop: '2.5rem' }}>
+                  <div className="input-field-group" style={{ marginBottom: '1.5rem' }}>
+                    <label style={{ display: 'block', marginBottom: '0.75rem', fontSize: '0.9rem', fontWeight: 500, color: 'var(--text-muted)' }}>
+                      Отправить готовый протокол на email:
+                    </label>
+                    <div style={{ position: 'relative' }}>
+                      <Mail style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--primary)', opacity: 0.7 }} size={18} />
+                      <input 
+                        type="email" 
+                        value={recipientEmail}
+                        onChange={(e) => setRecipientEmail(e.target.value)}
+                        placeholder="your-email@example.com"
+                        className="glass-input"
+                        style={{ width: '100%', paddingLeft: '3rem', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: 'white', height: '3.5rem' }}
+                      />
+                    </div>
+                  </div>
+                  
                   <button 
                     className="btn btn-primary" 
                     disabled={!file || loading}

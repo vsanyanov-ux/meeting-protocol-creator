@@ -30,6 +30,19 @@ class YandexProvider(BaseAIProvider):
     def name(self) -> str:
         return "yandex"
 
+    def _get_audio_duration(self, audio_path: str) -> float:
+        """Get audio duration in seconds using ffprobe."""
+        try:
+            cmd = [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", audio_path
+            ]
+            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=True)
+            return float(result.stdout.strip())
+        except Exception as e:
+            logger.warning(f"Could not get audio duration: {e}")
+            return 0.0
+
     def transcribe_audio(
         self, 
         audio_path: str, 
@@ -37,8 +50,13 @@ class YandexProvider(BaseAIProvider):
         status_updater: Callable[[str, str], None],
         trace: Any
     ) -> Optional[str]:
+        # Get duration for STT pricing (Langfuse)
+        duration_sec = self._get_audio_duration(audio_path)
+        if trace and hasattr(trace, "log_stt"):
+            trace.log_stt(duration_sec)
+
         # S3 upload disabled, falling back to chunking
-        status_updater("transcribing", "Processing long audio via chunking (No S3)...")
+        status_updater("transcribing", f"Processing {int(duration_sec)}s audio via chunking (No S3)...")
         chunk_prefix = os.path.join(os.path.dirname(audio_path), f"chunks_{file_id}")
         if not os.path.exists(chunk_prefix):
             os.makedirs(chunk_prefix)
@@ -200,10 +218,22 @@ class YandexProvider(BaseAIProvider):
     def verify_protocol(self, transcription: str, protocol: str) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
         system_text = (
-            "Ты — строгий корпоративный аудитор... \n"
-            "Твоя задача: Сравнить РАСШИФРОВКУ и готовый ПРОТОКОЛ. \n"
-            "Найди любые расхождения, пропущенные поручения или ошибки. \n"
-            "Выдай краткий отчет: что проверено и найдены ли критические ошибки."
+            "Ты — строгий корпоративный аудитор. Твоя задача: Сравнить РАСШИФРОВКУ и готовый ПРОТОКОЛ.\n"
+            "Найди любые расхождения, пропущенные поручения или фактические ошибки.\n"
+            "Оцени качество протокола по 5-балльной шкале по трем критериям:\n"
+            "1. completeness (полнота) — все ли важные темы и поручения из расшифровки попали в протокол.\n"
+            "2. accuracy (точность) — нет ли в протоколе искажений смысла или выдуманных фактов.\n"
+            "3. hallucinations (отсутствие галлюцинаций) — 5 баллов если лишней информации нет, 1 балл если AI много выдумал.\n\n"
+            "В конце ответа ОБЯЗАТЕЛЬНО добавь блок JSON для автоматической обработки:\n"
+            "```json\n"
+            "{\n"
+            "  \"scores\": {\n"
+            "    \"completeness\": 5,\n"
+            "    \"accuracy\": 5,\n"
+            "    \"hallucinations\": 5\n"
+            "  }\n"
+            "}\n"
+            "```"
         )
         messages = [
             {"role": "system", "text": system_text},
@@ -215,12 +245,33 @@ class YandexProvider(BaseAIProvider):
             "messages": messages
         }
         
-        result = {"verification_report": "Проверка не выполнена", "input_tokens": 0, "output_tokens": 0}
+        result = {
+            "verification_report": "Проверка не выполнена", 
+            "input_tokens": 0, 
+            "output_tokens": 0,
+            "latency_ms": 0,
+            "scores": {}
+        }
+        t_start = time.time()
         try:
             response = requests.post(self.gpt_url, headers=headers, json=prompt, timeout=120)
+            result["latency_ms"] = int((time.time() - t_start) * 1000)
             if response.status_code == 200:
                 data = response.json()
-                result["verification_report"] = data["result"]["alternatives"][0]["message"]["text"]
+                text = data["result"]["alternatives"][0]["message"]["text"]
+                result["verification_report"] = text
+                
+                # Попытка извлечь JSON с оценками
+                try:
+                    import re
+                    json_match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
+                    if json_match:
+                        score_data = json.loads(json_match.group(1))
+                        result["scores"] = score_data.get("scores", {})
+                        logger.info(f"✅ Auditor scores extracted: {result['scores']}")
+                except Exception as je:
+                    logger.warning(f"Could not parse auditor scores: {je}")
+
                 usage = data["result"].get("usage", {})
                 result["input_tokens"] = usage.get("inputTextTokens")
                 result["output_tokens"] = usage.get("completionTokens")

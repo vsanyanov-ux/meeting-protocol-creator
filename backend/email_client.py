@@ -25,12 +25,19 @@ def send_email(recipient_email: str, subject: str, body: str, attachment_path: s
         msg.add_attachment(file_data, maintype='application', subtype='vnd.openxmlformats-officedocument.wordprocessingml.document', filename=file_name)
 
     try:
-        with smtplib.SMTP(smtp_host, smtp_port) as server:
-            server.starttls()
-            server.login(smtp_user, smtp_password)
-            server.send_message(msg)
-            logger.info(f"Email successfully sent to {recipient_email}")
-            return True
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port) as server:
+                server.login(smtp_user, smtp_password)
+                server.send_message(msg)
+                logger.info(f"Email successfully sent (SSL) to {recipient_email}")
+                return True
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port) as server:
+                server.starttls()
+                server.login(smtp_user, smtp_password)
+                server.send_message(msg)
+                logger.info(f"Email successfully sent (STARTTLS) to {recipient_email}")
+                return True
     except Exception as e:
         logger.error(f"Failed to send email: {e}")
         return False
