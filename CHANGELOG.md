@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.1.2] — 2026-04-10
+
+### Added
+-   **Strict Observability Filtering**: Implemented `should_export_span` filter in the Langfuse client to eliminate auto-instrumentation noise from third-party libraries (httpx, etc.).
+-   **Automated Cleanup**: Created a utility script for batch deleting junk traces from the Langfuse dashboard.
+
+### Fixed
+-   **Langfuse v4 Compatibility**: Fixed critical hex ID formatting error and implemented v4-compatible trace initialization using `trace_context`.
+
+### Improved
+-   **Email Antispam**: Added `Auto-Submitted` and `X-Auto-Response-Suppress` headers to reduce spam scores and prevent auto-reply loops.
+
 ## [2.1.1] — 2026-04-10
 
 ### Fixed
@@ -12,6 +24,11 @@ All notable changes to this project will be documented in this file.
 ### Changed
 -   **Observability**: Renamed trace root for clearer identification in Langfuse.
 -   **Security**: Synchronized sender identity with verified SMTP credentials to improve mail server trust.
+
+## [2.1.0] — 2026-04-10
+
+### Added
+-   **Email Notifications**: Initial deployment of the email delivery system using Yandex SMTP with SSL/TLS support.
 
 ## [2.0.0] — 2026-04-09
 

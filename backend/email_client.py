@@ -26,7 +26,9 @@ def send_email(recipient_email: str, subject: str, body: str, attachment_path: s
     
     # Anti-spam headers
     msg['X-Priority'] = '3'
-    msg['X-Mailer'] = 'Microsoft Outlook 16.0'  # Identifies as a common client
+    msg['X-Mailer'] = 'Microsoft Outlook 16.0'
+    msg['Auto-Submitted'] = 'auto-generated'
+    msg['X-Auto-Response-Suppress'] = 'All'
     msg['Precedence'] = 'list'
 
     # Plain text version

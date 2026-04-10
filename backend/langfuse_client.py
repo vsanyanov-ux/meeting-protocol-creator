@@ -36,7 +36,16 @@ def get_langfuse() -> Optional[Any]:
 
     try:
         from langfuse import Langfuse
-        _langfuse_instance = Langfuse(public_key=pk, secret_key=sk, host=host)
+        from langfuse.span_filter import is_langfuse_span
+        
+        # Используем should_export_span=is_langfuse_span, чтобы игнорировать 
+        # автоматические спаны от сторонних библиотек (httpx, openai и т.д.)
+        _langfuse_instance = Langfuse(
+            public_key=pk, 
+            secret_key=sk, 
+            host=host,
+            should_export_span=is_langfuse_span
+        )
         _langfuse_enabled = True
         return _langfuse_instance
     except Exception as e:
@@ -73,17 +82,19 @@ class PipelineTrace:
     def __enter__(self):
         if not self.lf: return self
         try:
-            # В SDK v4.0.6 наиболее надежный способ - использование lf.trace
-            self._root_obs = self.lf.trace(
-                id=self.trace_id,
+            # В SDK v4.0.6 используем trace_context для задания ID
+            ctx = {"trace_id": self.trace_id}
+            self._root_obs = self.lf.start_observation(
                 name="meeting_protocol_processing",
+                as_type="span",
+                trace_context=ctx,
                 metadata={
                     "filename": self.filename,
                     "provider": self.provider,
                     "file_id": self.file_id,
+                    "tags": ["meeting-protocol", self.provider],
                     **self.metadata
-                },
-                tags=["meeting-protocol", self.provider]
+                }
             )
             
             # Сохраняем ID корневого объекта
@@ -91,9 +102,6 @@ class PipelineTrace:
             self.lf.flush()
             
             logger.info(f"🚀 Started Langfuse v4 trace: {self.trace_id}")
-            return self
-        except Exception as e:
-            logger.error(f"Langfuse v4 start error: {e}")
             return self
         except Exception as e:
             logger.error(f"Langfuse v4 start error: {e}")
@@ -150,6 +158,7 @@ class PipelineTrace:
         latency_ms: int = 0,
         input_tokens: Any = None,
         output_tokens: Any = None,
+        name: Optional[str] = None
     ):
         if not self.lf or not self._root_obs: return
         try:
@@ -170,12 +179,14 @@ class PipelineTrace:
                     new_m["content"] = new_m.pop("text")
                 sanitized_messages.append(new_m)
 
-            if "auditor" in model.lower() or "audit" in model.lower():
-                gen_name = "audit_protocol"
+            if name:
+                gen_name = name
+            elif "auditor" in model.lower() or "audit" in model.lower():
+                gen_name = "Audit Protocol"
             elif "format" in model.lower():
-                gen_name = "format_transcript"
+                gen_name = "Format Transcript"
             else:
-                gen_name = "create_protocol"
+                gen_name = "Create Protocol"
 
             start_t = datetime.datetime.now() - datetime.timedelta(milliseconds=latency_ms)
             

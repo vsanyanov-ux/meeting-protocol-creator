@@ -414,6 +414,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                 processing_status[file_id].update({"status": "generating", "message": "Analyzing meeting content and generating protocol..."})
                 
                 try:
+                    trace.start_span("Create Protocol")
                     gpt_result = ai_provider.create_protocol(transcription)
                     protocol_text = gpt_result["text"]
 
@@ -425,7 +426,9 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                         latency_ms=gpt_result["latency_ms"],
                         input_tokens=gpt_result["input_tokens"],
                         output_tokens=gpt_result["output_tokens"],
+                        name="Create Protocol Generation"
                     )
+                    trace.end_span("Create Protocol", {"success": bool(protocol_text)})
                 except Exception as e:
                     err_msg = f"GPT Generation crash: {str(e)}"
                     logger.error(err_msg)
