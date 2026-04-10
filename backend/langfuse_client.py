@@ -58,8 +58,13 @@ class PipelineTrace:
         self.metadata = metadata or {}
         self.lf = get_langfuse()
         
-        # Генератор ID для Langfuse (32 hex chars without dashes for SDK v4 validation)
-        self.trace_id = uuid.uuid4().hex
+        # Langfuse v4 OTel needs hex IDs (32 chars for trace, 16 for span)
+        self.trace_id = file_id.replace("-", "") if file_id else uuid.uuid4().hex
+        if len(self.trace_id) < 32:
+            self.trace_id = (self.trace_id * 2)[:32]
+        elif len(self.trace_id) > 32:
+            self.trace_id = self.trace_id[:32]
+            
         self.root_span_id = None
         self._root_obs = None
         self._active_spans = {}
@@ -68,40 +73,27 @@ class PipelineTrace:
     def __enter__(self):
         if not self.lf: return self
         try:
-            # В SDK v4.0.6 (OpenTelemetry) имя трейса надежнее всего задавать 
-            # через атрибут спана.
-
-            # 2. Создаем корневое наблюдение (Span). 
-            self._root_obs = self.lf.start_observation(
+            # В SDK v4.0.6 наиболее надежный способ - использование lf.trace
+            self._root_obs = self.lf.trace(
+                id=self.trace_id,
                 name="meeting_protocol_processing",
-                as_type="span",
-                trace_context={"trace_id": self.trace_id},
                 metadata={
                     "filename": self.filename,
                     "provider": self.provider,
                     "file_id": self.file_id,
                     **self.metadata
-                }
+                },
+                tags=["meeting-protocol", self.provider]
             )
             
-            # 3. Принудительно устанавливаем имя Трейса через специальный атрибут Langfuse
-            # Это гарантирует, что в общем списке Langfuse будет отображаться именно это имя.
-            try:
-                self._root_obs._otel_span.set_attribute("langfuse.trace.name", "meeting_protocol_processing")
-                # Теги также пробрасываем на уровень трейса
-                self._root_obs._otel_span.set_attribute("langfuse.trace.tags", ["meeting-protocol", self.provider])
-                # Синхронизируем, чтобы имя появилось в UI сразу
-                self.lf.flush()
-            except Exception as e:
-                logger.debug(f"Failed to set trace attributes: {e}")
-
-            # Сохраняем ID корневого спана
+            # Сохраняем ID корневого объекта
             self.root_span_id = self._root_obs.id
-            
-            
-            # Принудительно отправляем корень, чтобы он появился в UI сразу
             self.lf.flush()
             
+            logger.info(f"🚀 Started Langfuse v4 trace: {self.trace_id}")
+            return self
+        except Exception as e:
+            logger.error(f"Langfuse v4 start error: {e}")
             return self
         except Exception as e:
             logger.error(f"Langfuse v4 start error: {e}")
@@ -280,7 +272,9 @@ def submit_score(file_id: str, score_name: str, value: float, comment: str = "")
     lf = get_langfuse()
     if not lf: return False
     try:
-        lf.create_score(trace_id=file_id, name=score_name, value=value, comment=comment)
+        # Очищаем ID от дефисов для v4 SDK
+        clean_id = file_id.replace("-", "")[:32]
+        lf.create_score(trace_id=clean_id, name=score_name, value=value, comment=comment)
         lf.flush()
         return True
     except Exception as e:

@@ -13,6 +13,23 @@ All notable changes to this project will be documented in this file.
 -   **Observability**: Renamed trace root for clearer identification in Langfuse.
 -   **Security**: Synchronized sender identity with verified SMTP credentials to improve mail server trust.
 
+## [2.0.0] — 2026-04-09
+
+### Added
+- **Offline / Local Mode**: Full support for local execution using **Ollama** and **Faster-Whisper**. Integrated **Qwen 2.5 (3B)** as the default local LLM.
+- **Hybrid AI Router**: Ability to switch between Yandex Cloud and Local providers via `.env` configuration or dedicated `.bat` scripts.
+- **Langfuse Observability**: Major transition to Langfuse SDK v4 for tracing all pipeline stages, including transcription, generation, and verification.
+- **Cost Estimation**: Integrated cost and token usage tracking for both Yandex and local providers within the tracing dashboard.
+- **AI-Auditor (Self-Critique)**: Automated verification mechanism that audits the generated protocol against the original transcription to prevent hallucinations.
+- **Smart Tables**: Enhanced protocol formatting with automatic Markdown/Word table generation for action items and decisions.
+- **Environment Management**: Added `switch_to_local.bat` and `switch_to_yandex.bat` for quick environment setup.
+
+### Fixed
+- **Pipeline Data Loss**: Fixed a critical bug where transcription and auditing results were not persisted correctly during the final protocol generation step.
+- **Trace Missing Steps**: Resolved an issue where Langfuse traces were only recorded for certain actions, leaving gaps in the observability history.
+- **Local STT Stability**: Improved error handling and resource management for long-duration audio transcriptions on CPU/GPU.
+- **Validation Errors**: Fixed Pydantic model discrepancies when switching between different LLM providers with varying output formats.
+
 ## [1.0.0] - 2026-04-04
 
 ### Added
