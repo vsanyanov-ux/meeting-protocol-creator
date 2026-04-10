@@ -25,4 +25,9 @@ export const getProcessingStatus = async (fileId) => {
   return response.data;
 };
 
+export const getSystemInfo = async () => {
+  const response = await api.get('/info');
+  return response.data;
+};
+
 export default api;

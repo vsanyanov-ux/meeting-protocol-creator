@@ -51,6 +51,10 @@ class LocalProvider(BaseAIProvider):
     def name(self) -> str:
         return "local"
 
+    @property
+    def model_name(self) -> str:
+        return self.ollama_model
+
     def transcribe_audio(
         self, 
         audio_path: str, 

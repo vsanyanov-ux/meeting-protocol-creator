@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.1.1] — 2026-04-10
+
+### Fixed
+-   **Langfuse v4 (OpenTelemetry) Compatibility**: Fixed critical `ValueError` in trace initialization by switching to 32-bit hex IDs (without dashes) and better attribute handling.
+-   **SMTP Deliverability**: Resolved error `554 5.7.1 Message rejected under suspicion of SPAM` for Yandex. Added proper `Message-ID`, `Date`, and HTML content to outgoing emails.
+-   **Backend Robustness**: Fixed indentation issues and improved error handling in the main processing pipeline. Status updates now continue even if optional steps (like emailing) fail.
+
+### Changed
+-   **Observability**: Renamed trace root for clearer identification in Langfuse.
+-   **Security**: Synchronized sender identity with verified SMTP credentials to improve mail server trust.
+
 ## [1.0.0] - 2026-04-04
 
 ### Added

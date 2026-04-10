@@ -250,3 +250,24 @@ h1 {
 .animate-pulse {
   animation: pulse 2s infinite ease-in-out;
 }
+
+/* System Badges */
+.system-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--glass-border);
+  border-radius: 99px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-main);
+  transition: all 0.3s ease;
+}
+
+.system-badge:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}

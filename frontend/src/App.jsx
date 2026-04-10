@@ -12,10 +12,14 @@ import {
   FileDown,
   ChevronDown,
   ShieldCheck,
-  Languages
+  Languages,
+  Server,
+  Wifi,
+  Cpu,
+  Monitor
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { uploadMeeting, getProcessingStatus, API_BASE_URL } from './api';
+import { uploadMeeting, getProcessingStatus, getSystemInfo, API_BASE_URL } from './api';
 
 const App = () => {
   const [file, setFile] = useState(null);
@@ -24,7 +28,24 @@ const App = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [recipientEmail, setRecipientEmail] = useState('v.s.anyanov@gmail.com');
+  const [systemInfo, setSystemInfo] = useState({ location: 'Загрузка...', provider_name: 'Загрузка...', is_online: false });
+  const [isBackendOnline, setIsBackendOnline] = useState(false);
   const fileInputRef = useRef(null);
+
+  // Fetch system info on mount
+  useEffect(() => {
+    const fetchInfo = async () => {
+      try {
+        const info = await getSystemInfo();
+        setSystemInfo(info);
+        setIsBackendOnline(true);
+      } catch (err) {
+        console.error("Failed to fetch system info:", err);
+        setIsBackendOnline(false);
+      }
+    };
+    fetchInfo();
+  }, []);
 
   // Poll status when fileId is present
   useEffect(() => {
@@ -126,6 +147,20 @@ const App = () => {
             </motion.div>
             <h1>Meeting Protocol Creator</h1>
             <p className="subtitle">Профессиональное создание протоколов совещаний из аудиозаписей.</p>
+            
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem', marginTop: '1.5rem', flexWrap: 'wrap' }}>
+              <div className="system-badge">
+                <Monitor size={14} /> <span>Фронтенд: <span style={{ color: 'var(--secondary)' }}>Онлайн</span></span>
+              </div>
+              <div className="system-badge">
+                <Server size={14} /> <span>Бэкенд: <span style={{ color: isBackendOnline ? (systemInfo.is_online ? '#60a5fa' : 'var(--secondary)') : 'var(--error)' }}>
+                  {isBackendOnline ? systemInfo.location : 'Ошибка'}
+                </span></span>
+              </div>
+              <div className="system-badge">
+                <Cpu size={14} /> <span>ИИ: <span style={{ color: 'var(--primary)' }}>{isBackendOnline ? systemInfo.provider_name : 'Нет связи'}</span></span>
+              </div>
+            </div>
           </header>
 
           <AnimatePresence mode="wait">
@@ -193,7 +228,7 @@ const App = () => {
                   
                   <button 
                     className="btn btn-primary" 
-                    disabled={!file || loading}
+                    disabled={!file || loading || !isBackendOnline}
                     onClick={handleUpload}
                   >
                     {loading ? <Loader2 className="animate-pulse" /> : "Создать протокол"}
@@ -232,14 +267,14 @@ const App = () => {
                   />
                   <StatusStep 
                     title="Транскрипция" 
-                    desc="Превращаем голос в текст (Yandex SpeechKit)" 
+                    desc={`Распознавание речи: ${systemInfo.provider_name.includes('Яндекс') ? 'SpeechKit' : 'Whisper'}`} 
                     icon={<Mic size={18} />}
                     isActive={status?.status === 'transcribing'}
                     isComplete={currentStepIndex() > 2}
                   />
                   <StatusStep 
                     title="Анализ и Саммери" 
-                    desc="Создаем протокол с помощью YandexGPT" 
+                    desc={`Генерация протокола: ${systemInfo.provider_name}`} 
                     icon={<FileText size={18} />}
                     isActive={status?.status === 'generating'}
                     isComplete={currentStepIndex() > 3}

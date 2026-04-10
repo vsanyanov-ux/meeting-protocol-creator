@@ -30,6 +30,11 @@ class YandexProvider(BaseAIProvider):
     def name(self) -> str:
         return "yandex"
 
+    @property
+    def model_name(self) -> str:
+        # returns e.g. 'yandexgpt/latest'
+        return self.gpt_model
+
     def _get_audio_duration(self, audio_path: str) -> float:
         """Get audio duration in seconds using ffprobe."""
         try:

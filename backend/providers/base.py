@@ -5,7 +5,13 @@ class BaseAIProvider(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Name of the provider"""
+        """Name of the provider (e.g. 'yandex', 'local')"""
+        pass
+
+    @property
+    @abstractmethod
+    def model_name(self) -> str:
+        """Specific model identifier (e.g. 'yandexgpt/latest', 'llama3')"""
         pass
 
     @abstractmethod

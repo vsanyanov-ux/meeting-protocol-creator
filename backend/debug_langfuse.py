@@ -1,5 +1,6 @@
 import os
 import sys
+import uuid
 from loguru import logger
 
 try:
@@ -7,23 +8,49 @@ try:
     print(f"IMPORT SUCCESS: {Langfuse}")
     
     # Имитируем загрузку из .env
-    pk = "pk-lf-36201d56-0fa0-4ea5-b3d1-eb7004c0142d"
-    sk = "sk-lf-39e748b6-ef45-45e2-8011-08f99dc8a682"
-    host = "https://us.cloud.langfuse.com/"
+    pk = os.getenv("LANGFUSE_PUBLIC_KEY")
+    sk = os.getenv("LANGFUSE_SECRET_KEY")
+    host = os.getenv("LANGFUSE_HOST", "https://cloud.langfuse.com")
     
+    if not pk or not sk:
+        print("ERROR: Missing Langfuse keys in environment!")
+        sys.exit(1)
+        
     lf = Langfuse(public_key=pk, secret_key=sk, host=host)
     print(f"INSTANCE CREATED: {type(lf)}")
     
-    methods = dir(lf)
-    print("AVAILABLE METHODS (including trace?):")
-    print([m for m in methods if not m.startswith('_')])
+    trace_id = uuid.uuid4().hex
+    print(f"TESTING START_OBSERVATION (trace_id: {trace_id})")
     
-    if 'trace' in methods:
-        print("!!! TRACE METHOD FOUND !!!")
-        t = lf.trace(name="test_diagnostic")
-        print(f"TRACE CREATED: {t}")
-    else:
-        print("??? TRACE METHOD MISSING ???")
+    # 1. Test trace creation
+    obs = lf.start_observation(
+        name="diagnostic_root",
+        as_type="span",
+        trace_context={"trace_id": trace_id}
+    )
+    print(f"ROOT OBSERVATION CREATED: {obs.id}")
+    
+    # 2. Test child nesting
+    child = lf.start_observation(
+        name="diagnostic_child",
+        as_type="span",
+        trace_context={
+            "trace_id": trace_id,
+            "parent_span_id": obs.id
+        }
+    )
+    print(f"CHILD OBSERVATION CREATED: {child.id}")
+    
+    child.end()
+    obs.end()
+    
+    # 3. Test scoring
+    print("TESTING CREATE_SCORE")
+    lf.create_score(trace_id=trace_id, name="diagnostic_check", value=1.0)
+    print("SCORE CALL SUCCESS")
+
+    lf.flush()
+    print("DONE - Check your Langfuse dashboard for 'diagnostic_root'")
         
 except Exception as e:
     print(f"DIAGNOSTIC FAILED: {e}")
