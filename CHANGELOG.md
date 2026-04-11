@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.1.3] — 2026-04-11
+
+### Added
+-   **Rebranding**: Officially renamed the project to **PRO-Толк** (AI Protocol Assistant). Updated UI titles, subtitles, and documentation.
+-   **Accurate Cost Mapping**: Implemented 92 RUB/USD exchange rate for Yandex Cloud AI services to ensure correct cost tracking in the Langfuse dashboard.
+-   **Dynamic Model Indicators**: Updated frontend buttons to show "Local" or "Online" status based on the selected AI provider.
+
+### Fixed
+-   **Langfuse SDK v4 Hardening**: Resolved critical ID validation conflicts by separating 32-hex Trace IDs and 16-hex Span IDs. Fixed trace nesting using `trace_context`.
+-   **STT Pricing**: Implemented duration-based pricing for transcription logs.
+
+
 ## [2.1.2] — 2026-04-10
 
 ### Added
