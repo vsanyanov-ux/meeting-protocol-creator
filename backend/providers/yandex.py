@@ -5,6 +5,7 @@ import json
 import boto3
 import shutil
 import subprocess
+import asyncio
 from typing import Optional, List, Dict, Any, Callable
 from loguru import logger
 
@@ -35,20 +36,22 @@ class YandexProvider(BaseAIProvider):
         # returns e.g. 'yandexgpt/latest'
         return self.gpt_model
 
-    def _get_audio_duration(self, audio_path: str) -> float:
+    async def _get_audio_duration(self, audio_path: str) -> float:
         """Get audio duration in seconds using ffprobe."""
         try:
             cmd = [
                 "ffprobe", "-v", "error", "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1", audio_path
             ]
-            result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=True)
+            result = await asyncio.to_thread(
+                subprocess.run, cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=True
+            )
             return float(result.stdout.strip())
         except Exception as e:
             logger.warning(f"Could not get audio duration: {e}")
             return 0.0
 
-    def transcribe_audio(
+    async def transcribe_audio(
         self, 
         audio_path: str, 
         file_id: str, 
@@ -56,7 +59,7 @@ class YandexProvider(BaseAIProvider):
         trace: Any
     ) -> Optional[str]:
         # Get duration for STT pricing (Langfuse)
-        duration_sec = self._get_audio_duration(audio_path)
+        duration_sec = await self._get_audio_duration(audio_path)
         if trace and hasattr(trace, "log_stt"):
             trace.log_stt(duration_sec)
 
@@ -67,12 +70,16 @@ class YandexProvider(BaseAIProvider):
             os.makedirs(chunk_prefix)
             
         try:
-            subprocess.run([
-                "ffmpeg", "-y", "-i", audio_path, 
-                "-f", "segment", "-segment_time", "25",
-                "-c", "copy",
-                os.path.join(chunk_prefix, "chunk_%03d.ogg")
-            ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            await asyncio.to_thread(
+                subprocess.run,
+                [
+                    "ffmpeg", "-y", "-i", audio_path, 
+                    "-f", "segment", "-segment_time", "25",
+                    "-c", "copy",
+                    os.path.join(chunk_prefix, "chunk_%03d.ogg")
+                ], 
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
             
             chunk_files = sorted([f for f in os.listdir(chunk_prefix) if f.endswith(".ogg")])
             transcription_parts = []
@@ -83,7 +90,7 @@ class YandexProvider(BaseAIProvider):
                 with open(chunk_path, "rb") as f:
                     chunk_bytes = f.read()
                 
-                part = self._transcribe_short(chunk_bytes)
+                part = await self._transcribe_short(chunk_bytes)
                 if part:
                     transcription_parts.append(part)
             
@@ -94,9 +101,9 @@ class YandexProvider(BaseAIProvider):
             return None
         finally:
             if os.path.exists(chunk_prefix):
-                shutil.rmtree(chunk_prefix)
+                await asyncio.to_thread(shutil.rmtree, chunk_prefix)
 
-    def _upload_to_s3(self, file_path: str, object_name: str) -> Optional[str]:
+    async def _upload_to_s3(self, file_path: str, object_name: str) -> Optional[str]:
         if not all([self.s3_access_key, self.s3_secret_key, self.s3_bucket]):
             return None
         session = boto3.session.Session()
@@ -107,18 +114,20 @@ class YandexProvider(BaseAIProvider):
             aws_secret_access_key=self.s3_secret_key
         )
         try:
-            s3.upload_file(file_path, self.s3_bucket, object_name)
+            await asyncio.to_thread(s3.upload_file, file_path, self.s3_bucket, object_name)
             # Use native S3 URI format for SpeechKit instead of presigned URLs
             return f"s3://{self.s3_bucket}/{object_name}"
         except Exception as e:
             logger.error(f"S3 Upload Error: {e}")
             return None
 
-    def _transcribe_short(self, file_content: bytes, lang: str = "ru-RU") -> Optional[str]:
+    async def _transcribe_short(self, file_content: bytes, lang: str = "ru-RU") -> Optional[str]:
         headers = {"Authorization": f"Api-Key {self.api_key}"}
         params = {"folderId": self.folder_id, "lang": lang}
         try:
-            response = requests.post(self.stt_url, headers=headers, params=params, data=file_content, timeout=30)
+            response = await asyncio.to_thread(
+                requests.post, self.stt_url, headers=headers, params=params, data=file_content, timeout=30
+            )
             if response.status_code == 200:
                 return response.json().get("result")
             else:
@@ -128,7 +137,7 @@ class YandexProvider(BaseAIProvider):
             logger.error(f"STT Network Error: {e}")
             return None
 
-    def _transcribe_long(self, file_url: str, lang: str = "ru-RU") -> Optional[str]:
+    async def _transcribe_long(self, file_url: str, lang: str = "ru-RU") -> Optional[str]:
         headers = {"Authorization": f"Api-Key {self.api_key}"}
         # file_url is now expected to be in s3://bucket/key format
         body = {
@@ -146,8 +155,10 @@ class YandexProvider(BaseAIProvider):
         }
         try:
             # transcribe.api is the correct, resolvable endpoint for long STT v2
-            response = requests.post("https://transcribe.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize", 
-                                    headers=headers, json=body, timeout=30)
+            response = await asyncio.to_thread(
+                requests.post, "https://transcribe.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize", 
+                headers=headers, json=body, timeout=30
+            )
             if response.status_code != 200:
                 logger.error(f"Long STT Start Error: {response.status_code} - {response.text}")
                 return None
@@ -159,10 +170,12 @@ class YandexProvider(BaseAIProvider):
         max_retries = 360 # ~1 hour timeout total
         attempts = 0
         while attempts < max_retries:
-            time.sleep(10)
+            await asyncio.sleep(10)
             attempts += 1
             try:
-                status_response = requests.get(f"{self.operation_url}{operation_id}", headers=headers, timeout=10)
+                status_response = await asyncio.to_thread(
+                    requests.get, f"{self.operation_url}{operation_id}", headers=headers, timeout=10
+                )
                 if status_response.status_code != 200:
                     logger.error(f"Operation status check error: {status_response.text}")
                     return None
@@ -183,7 +196,7 @@ class YandexProvider(BaseAIProvider):
         logger.error("Long STT timed out after 1 hour.")
         return None
 
-    def create_protocol(self, transcription: str) -> Dict[str, Any]:
+    async def create_protocol(self, transcription: str) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
         system_text = (
             "Ты — ведущий эксперт по корпоративному управлению... \n"
@@ -204,7 +217,7 @@ class YandexProvider(BaseAIProvider):
         t_start = time.time()
         
         try:
-            response = requests.post(self.gpt_url, headers=headers, json=prompt, timeout=120)
+            response = await asyncio.to_thread(requests.post, self.gpt_url, headers=headers, json=prompt, timeout=120)
             result["latency_ms"] = int((time.time() - t_start) * 1000)
 
             if response.status_code == 200:
@@ -220,7 +233,7 @@ class YandexProvider(BaseAIProvider):
             
         return result
 
-    def verify_protocol(self, transcription: str, protocol: str) -> Dict[str, Any]:
+    async def verify_protocol(self, transcription: str, protocol: str) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
         system_text = (
             "Ты — строгий корпоративный аудитор. Твоя задача: Сравнить РАСШИФРОВКУ и готовый ПРОТОКОЛ.\n"
@@ -259,7 +272,7 @@ class YandexProvider(BaseAIProvider):
         }
         t_start = time.time()
         try:
-            response = requests.post(self.gpt_url, headers=headers, json=prompt, timeout=120)
+            response = await asyncio.to_thread(requests.post, self.gpt_url, headers=headers, json=prompt, timeout=120)
             result["latency_ms"] = int((time.time() - t_start) * 1000)
             if response.status_code == 200:
                 data = response.json()
@@ -285,7 +298,7 @@ class YandexProvider(BaseAIProvider):
             
         return result
 
-    def format_transcript_with_ai(self, transcription: str) -> Dict[str, Any]:
+    async def format_transcript_with_ai(self, transcription: str) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
         system_text = (
             "Ты — эксперт по лингвистическому анализу диалогов. Твоя задача: превратить сплошной текст расшифровки в структурированный диалог.\n\n"
@@ -313,7 +326,7 @@ class YandexProvider(BaseAIProvider):
         
         result = {"formatted_text": transcription, "input_tokens": 0, "output_tokens": 0}
         try:
-            response = requests.post(self.gpt_url, headers=headers, json=prompt, timeout=120)
+            response = await asyncio.to_thread(requests.post, self.gpt_url, headers=headers, json=prompt, timeout=120)
             if response.status_code == 200:
                 data = response.json()
                 result["formatted_text"] = data["result"]["alternatives"][0]["message"]["text"]

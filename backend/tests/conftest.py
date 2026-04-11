@@ -1,6 +1,6 @@
 import os
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock
 from fastapi.testclient import TestClient
 import shutil
 
@@ -23,14 +23,23 @@ def mock_external_services():
         
         # Setup default mock behaviors
         mock_provider.name = "mock-provider"
-        mock_provider.transcribe_audio.return_value = "This is a mock transcription."
-        mock_provider.create_protocol.return_value = {
+        mock_provider.model_name = "mock-model"
+        
+        # Use AsyncMock for methods that are now async
+        mock_provider.transcribe_audio = AsyncMock(return_value="This is a mock transcription.")
+        mock_provider.create_protocol = AsyncMock(return_value={
             "text": "## Protocol\nMocked protocol content.",
             "latency_ms": 100,
             "input_tokens": 10,
             "output_tokens": 20,
             "messages": []
-        }
+        })
+        mock_provider.verify_protocol = AsyncMock(return_value={
+            "verification_report": "Mocked verification passed.",
+            "input_tokens": 5,
+            "output_tokens": 10,
+            "scores": {"completeness": 5, "accuracy": 5, "hallucinations": 5}
+        })
         
         mock_email.return_value = True
         mock_norm.return_value = {"type": "audio", "path": "mock_audio.ogg"}

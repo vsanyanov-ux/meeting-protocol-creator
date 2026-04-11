@@ -11,7 +11,7 @@ def send_email(recipient_email: str, subject: str, body: str, attachment_path: s
     smtp_port = int(os.getenv("SMTP_PORT", 587))
     smtp_user = os.getenv("SMTP_USER")
     smtp_password = os.getenv("SMTP_PASSWORD")
-    display_name = os.getenv("SMTP_DISPLAY_NAME", "Meeting Protocol Creator")
+    display_name = os.getenv("SMTP_DISPLAY_NAME", "PRO-Толк")
 
     msg = EmailMessage()
     msg['Subject'] = f"Документ: {subject.split(':')[-1].strip()}"
@@ -35,6 +35,7 @@ def send_email(recipient_email: str, subject: str, body: str, attachment_path: s
     msg.set_content(body)
 
     # Professional HTML version
+    body_html_formatted = body.replace('\n', '<br>')
     html_body = f"""
     <html>
         <body style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
@@ -43,10 +44,10 @@ def send_email(recipient_email: str, subject: str, body: str, attachment_path: s
                 <p>Здравствуйте!</p>
                 <p>Результат обработки вашего файла сформирован и доступен во вложении к данному письму.</p>
                 <div style="background-color: #f9f9f9; padding: 15px; border-left: 4px solid #3498db; margin: 20px 0;">
-                    {body.replace('\n', '<br>')}
+                    {body_html_formatted}
                 </div>
                 <p style="font-size: 0.9em; color: #7f8c8d;">
-                    Это автоматическое уведомление от сервиса <b>Meeting Protocol Creator</b>.<br>
+                    Это автоматическое уведомление от сервиса <b>PRO-Толк</b>.<br>
                     Пожалуйста, не отвечайте на это письмо.
                 </p>
             </div>

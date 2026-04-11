@@ -36,6 +36,8 @@ services:
     container_name: mpc-frontend
     ports:
       - "90:80"
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html:ro
     depends_on:
       - backend
     restart: unless-stopped

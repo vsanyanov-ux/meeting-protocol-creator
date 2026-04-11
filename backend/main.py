@@ -46,17 +46,17 @@ async def lifespan(app: FastAPI):
         required_vars = ["YANDEX_API_KEY", "YANDEX_FOLDER_ID"]
         missing = [var for var in required_vars if not os.getenv(var)]
         if missing:
-            logger.error(f"STARTUP ERROR: Missing required env vars for Yandex: {missing}")
+            raise RuntimeError(f"STARTUP ERROR: Missing required env vars for Yandex: {missing}")
     
     logger.info(f"Config OK. Provider: {provider_type}. CORS allowed origins: {ALLOWED_ORIGINS}")
     # MAX_UPLOAD_SIZE_BYTES is defined below, so we use a hardcoded or global check
     # But wait, ordering matters. Let's move MAX_UPLOAD_SIZE_BYTES up.
     
     yield
-    logger.info("Shutting down Meeting Protocol Creator API")
+    logger.info("Shutting down PRO-Толк API")
 
 app = FastAPI(
-    title="Meeting Protocol Creator API",
+    title="PRO-Толк API",
     version="2.1.1",
     lifespan=lifespan
 )
@@ -155,7 +155,7 @@ async def get_info():
 
 @app.get("/")
 async def root():
-    return {"message": "Meeting Protocol Creator API is running"}
+    return {"message": "PRO-Толк API is running"}
 
 @app.get("/status/{file_id}")
 async def get_status(file_id: str):
@@ -263,19 +263,22 @@ async def process_meeting(
     # 1. Basic Extension Check (Optional Hint)
     parts = file.filename.split('.')
     extension = parts[-1].lower() if len(parts) > 1 else ""
-    
-    # 2. Save file locally (we will validate content next)
     file_id = str(uuid.uuid4())
-    # If no extension, we'll use 'tmp' but python-magic doesn't care about the filename
+    extension = file.filename.split(".")[-1].lower() if "." in file.filename else ""
     safe_ext = f".{extension}" if extension else ""
     local_path = os.path.join(UPLOAD_DIR, f"{file_id}{safe_ext}")
     
-    with open(local_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+    # 2. Save file locally (Sync file writing is blocking, offload it)
+    def save_file():
+        with open(local_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+    
+    await asyncio.to_thread(save_file)
     
     # 2.1 Deep Validation (MIME check) - This is the source of truth
+    # magic.from_file is sync/blocking, offload it
     try:
-        mime_type = magic.from_file(local_path, mime=True)
+        mime_type = await asyncio.to_thread(magic.from_file, local_path, mime=True)
         logger.info(f"File uploaded: {file.filename}, detected MIME: {mime_type}")
         
         # Valid MIME types list (simplified)
@@ -348,7 +351,9 @@ async def process_meeting(
 async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None, recipient_email: str = None):
     """Full pipeline: S3 Upload (optional) -> STT -> GPT -> DOCX -> Email (optional)."""
     import traceback
-
+    
+    logger.info(f"run_full_pipeline STARTED for file_id={file_id}, path={local_path}")
+    
     try:
         # --- Langfuse v4: используем контекстный менеджер для автоматического завершения трейса ---
         with PipelineTrace(
@@ -366,7 +371,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                 trace.start_span("normalization")
                 
                 try:
-                    norm_res = normalize_file(local_path, file_id)
+                    norm_res = await asyncio.to_thread(normalize_file, local_path, file_id)
                     trace.end_span("normalization", norm_res)
                 except Exception as e:
                     err_msg = f"Normalization crash: {str(e)}"
@@ -390,7 +395,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                         processing_status[file_id].update({"status": status, "message": msg})
                     
                     try:
-                        transcription = ai_provider.transcribe_audio(
+                        transcription = await ai_provider.transcribe_audio(
                             audio_path=norm_res["path"], 
                             file_id=file_id, 
                             status_updater=status_updater, 
@@ -415,7 +420,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                 
                 try:
                     trace.start_span("Create Protocol")
-                    gpt_result = ai_provider.create_protocol(transcription)
+                    gpt_result = await ai_provider.create_protocol(transcription)
                     protocol_text = gpt_result["text"]
 
                     # --- Langfuse: логируем LLM-вызов как Generation ---
@@ -444,7 +449,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                 processing_status[file_id].update({"status": "verifying", "message": "AI-Auditor is verifying protocol accuracy..."})
                 
                 try:
-                    verify_res = ai_provider.verify_protocol(transcription, protocol_text)
+                    verify_res = await ai_provider.verify_protocol(transcription, protocol_text)
                     processing_status[file_id]["verification_report"] = verify_res["verification_report"]
                     
                     # Log verification to Langfuse as a separate generation
@@ -472,7 +477,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                 # D. Generate DOCX
                 trace.start_span("docx_generation")
                 try:
-                    docx_path = generate_docx(protocol_text)
+                    docx_path = await asyncio.to_thread(generate_docx, protocol_text)
                     trace.end_span("docx_generation", {"path": docx_path})
                 except Exception as e:
                     err_msg = f"DOCX generation failed: {str(e)}"
@@ -490,10 +495,11 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                     try:
                         # Dynamic content to avoid spam filters
                         orig_filename = metadata.get("original_filename", "документа")
-                        success = send_email(
+                        success = await asyncio.to_thread(
+                            send_email,
                             recipient_email=recipient,
                             subject=f"Готов протокол совещания: {orig_filename}",
-                            body=f"Здравствуйте!\n\nПротокол совещания для файла '{orig_filename}' успешно сформирован и прикрепелен к этому письму.\n\nС уважением,\nMeeting Protocol Creator",
+                            body=f"Здравствуйте!\n\nПротокол совещания для файла '{orig_filename}' успешно сформирован и прикрепелен к этому письму.\n\nС уважением,\nPRO-Толк",
                             attachment_path=docx_path
                         )
                         trace.end_span("email_send", {"success": success, "recipient": recipient})
@@ -526,9 +532,9 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                     trace.finish("completed", {"docx_path": docx_path, "email_sent": False})
 
                 if os.path.exists(local_path):
-                    os.remove(local_path)
+                    await asyncio.to_thread(os.remove, local_path)
                 if norm_res.get("path") and os.path.exists(norm_res["path"]):
-                    os.remove(norm_res["path"])
+                    await asyncio.to_thread(os.remove, norm_res["path"])
 
     except Exception as e:
         logger.error(f"Pipeline error for {file_id}: {e}")

@@ -36,15 +36,11 @@ def get_langfuse() -> Optional[Any]:
 
     try:
         from langfuse import Langfuse
-        from langfuse.span_filter import is_langfuse_span
         
-        # Используем should_export_span=is_langfuse_span, чтобы игнорировать 
-        # автоматические спаны от сторонних библиотек (httpx, openai и т.д.)
         _langfuse_instance = Langfuse(
             public_key=pk, 
             secret_key=sk, 
-            host=host,
-            should_export_span=is_langfuse_span
+            host=host
         )
         _langfuse_enabled = True
         return _langfuse_instance
@@ -68,13 +64,14 @@ class PipelineTrace:
         self.lf = get_langfuse()
         
         # Langfuse v4 OTel needs hex IDs (32 chars for trace, 16 for span)
+        # Using a proper trace_id format ensures stability across the SDK
         self.trace_id = file_id.replace("-", "") if file_id else uuid.uuid4().hex
         if len(self.trace_id) < 32:
-            self.trace_id = (self.trace_id * 2)[:32]
+            self.trace_id = (self.trace_id * 32)[:32]
         elif len(self.trace_id) > 32:
             self.trace_id = self.trace_id[:32]
             
-        self.root_span_id = None
+        self._trace_obj = None
         self._root_obs = None
         self._active_spans = {}
         self.total_cost = 0.0
@@ -82,8 +79,8 @@ class PipelineTrace:
     def __enter__(self):
         if not self.lf: return self
         try:
-            # В SDK v4.0.6 используем trace_context для задания ID
             ctx = {"trace_id": self.trace_id}
+            # Создаем корневой спан, который выступит корнем для трейса в Dashboard
             self._root_obs = self.lf.start_observation(
                 name="meeting_protocol_processing",
                 as_type="span",
@@ -92,19 +89,18 @@ class PipelineTrace:
                     "filename": self.filename,
                     "provider": self.provider,
                     "file_id": self.file_id,
+                    "started_at": datetime.datetime.now().isoformat(),
                     "tags": ["meeting-protocol", self.provider],
                     **self.metadata
                 }
             )
             
-            # Сохраняем ID корневого объекта
-            self.root_span_id = self._root_obs.id
             self.lf.flush()
-            
-            logger.info(f"🚀 Started Langfuse v4 trace: {self.trace_id}")
+            logger.info(f"Started Langfuse v4 trace: {self.trace_id} (Name: meeting_protocol_processing)")
             return self
         except Exception as e:
-            logger.error(f"Langfuse v4 start error: {e}")
+            import traceback
+            logger.error(f"Langfuse v4 start error: {e}\n{traceback.format_exc()}")
             return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -121,7 +117,7 @@ class PipelineTrace:
         """Возвращает контекст для привязки к родителю."""
         return {
             "trace_id": self.trace_id,
-            "parent_observation_id": self.root_span_id
+            "parent_observation_id": self._root_obs.id if self._root_obs else None
         }
 
     def start_span(self, name: str, input_data: dict = None) -> Optional[Any]:
@@ -206,7 +202,7 @@ class PipelineTrace:
             self.total_cost += cost
             self.lf.flush()
         except Exception as e:
-            logger.error(f"❌ Langfuse generation log error: {e}")
+            logger.error(f"Langfuse generation log error: {e}")
 
     def log_stt(self, duration_sec: Any, model: str = "speechkit-stt"):
         if not self.lf or not self._root_obs: return
@@ -265,16 +261,18 @@ class PipelineTrace:
         
         try:
             res = output or {"status": status}
-            # Передаем общую стоимость в предназначенное для этого поле cost_details
+            
+            # Обновляем корневой спан
             self._root_obs.update(
                 output=res, 
                 cost_details={"total": self.total_cost},
                 level="INFO" if status == "completed" else "ERROR"
             )
             self._root_obs.end()
+            
             self.lf.flush()
             self._finished = True
-            logger.info(f"🏁 Langfuse Trace Finished: {self.trace_id} (Total Cost: ${self.total_cost:.6f})")
+            logger.info(f"Langfuse Trace Finished: {self.trace_id} (Total Cost: ${self.total_cost:.6f})")
         except Exception as e:
             logger.error(f"Langfuse trace finish error: {e}")
 

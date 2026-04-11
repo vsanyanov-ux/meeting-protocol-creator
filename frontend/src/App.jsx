@@ -45,6 +45,8 @@ const App = () => {
       }
     };
     fetchInfo();
+    const interval = setInterval(fetchInfo, 5000);
+    return () => clearInterval(interval);
   }, []);
 
   // Poll status when fileId is present
@@ -145,16 +147,19 @@ const App = () => {
             >
               <FileAudio color="white" size={32} />
             </motion.div>
-            <h1>Meeting Protocol Creator</h1>
-            <p className="subtitle">Профессиональное создание протоколов совещаний из аудиозаписей.</p>
+            <h1>PRO-Толк</h1>
+            <p className="subtitle">Профессиональное создание протоколов совещаний из видео и аудиозаписей.</p>
             
             <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem', marginTop: '1.5rem', flexWrap: 'wrap' }}>
               <div className="system-badge">
-                <Monitor size={14} /> <span>Фронтенд: <span style={{ color: 'var(--secondary)' }}>Онлайн</span></span>
+                <Server size={14} /> <span>Бэкенд: <span style={{ color: isBackendOnline ? (systemInfo.is_online ? '#60a5fa' : 'var(--secondary)') : 'var(--error)' }}>
+                  {isBackendOnline ? systemInfo.location : '---'}
+                </span></span>
               </div>
               <div className="system-badge">
-                <Server size={14} /> <span>Бэкенд: <span style={{ color: isBackendOnline ? (systemInfo.is_online ? '#60a5fa' : 'var(--secondary)') : 'var(--error)' }}>
-                  {isBackendOnline ? systemInfo.location : 'Ошибка'}
+                <div style={{ width: 8, height: 8, borderRadius: '50%', background: isBackendOnline ? 'var(--secondary)' : 'var(--error)', boxShadow: isBackendOnline ? '0 0 8px var(--secondary)' : 'none' }}></div>
+                <span>Статус: <span style={{ color: isBackendOnline ? 'var(--secondary)' : 'var(--error)', fontWeight: 'bold' }}>
+                  {isBackendOnline ? 'On' : 'Off'}
                 </span></span>
               </div>
               <div className="system-badge">
