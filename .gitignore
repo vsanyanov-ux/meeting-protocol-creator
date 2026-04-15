@@ -1,4 +1,4 @@
-﻿# Dependencies
+# Dependencies
 node_modules/
 dist/
 build/
@@ -30,6 +30,7 @@ temp_protocols/
 *.m4a
 
 # AI Models and Data
+models_cache/
 backend/models_cache/
 ollama_data/
 backend/Test Audio/

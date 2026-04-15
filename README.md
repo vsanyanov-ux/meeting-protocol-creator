@@ -40,9 +40,10 @@ graph TD
 |-----------|------------|
 | **Frontend** | React, Vite, Framer Motion, Glassmorphism UI |
 | **Backend** | Python, FastAPI, Pydantic |
-| **Local ML** | Ollama (LLM), Faster-Whisper (STT - int8) |
+| **Local ML** | Ollama (LLM), Faster-Whisper (STT - **CUDA**) |
 | **Cloud ML** | Yandex SpeechKit, Yandex GPT (Latest) |
 | **Core Tools** | FFmpeg, Magic-Python, Python-docx |
+| **Tracing** | Langfuse (SDK v4) |
 
 ---
 
@@ -55,17 +56,24 @@ graph TD
 
 ## 🚀 Быстрый старт (Docker)
 
-1.  **Настройка:** Отредактируйте ackend/.env. 
-    - Установите AI_PROVIDER=local для работы на своем ПК.
-    - Установите AI_PROVIDER=yandex для использования облачных мощностей.
-2.  **Запуск (CPU - по умолчанию):**
-    `ash
+1.  **Настройка:** Отредактируйте `backend/.env`. 
+    - Установите `AI_PROVIDER=local` для работы на своем ПК.
+    - Установите `AI_PROVIDER=yandex` для использования облачных мощностей.
+2.  **Запуск (GPU NVIDIA - Рекомендуется):**
+    ```bash
     docker-compose up -d --build
-    `
-3.  **Запуск (GPU - NVIDIA):**
-    `ash
-    docker-compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
-    `
+    ```
+    *(Убедитесь, что установлены NVIDIA Container Toolkit и актуальные драйверы)*.
+3.  **Запуск (CPU):**
+    Если у вас нет GPU, удалите секцию `deploy` с `reservations` из `docker-compose.yml` перед запуском.
+
+---
+
+## 💻 Системные требования (Local AI)
+Для стабильной работы "Turbo" режима на локальной машине:
+- **GPU**: NVIDIA RTX 3060 12GB или выше (рекомендуется для загрузки двух моделей одновременно).
+- **RAM/WSL**: Минимум 8 ГБ выделенной памяти для WSL2.
+- **Драйверы**: NVIDIA Driver 560+ и NVIDIA Container Toolkit.
 
 ---
 

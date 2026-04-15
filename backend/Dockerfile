@@ -17,6 +17,7 @@ WORKDIR /app
 # Point HuggingFace to a writable directory within /app
 ENV HF_HOME=/app/models_cache/huggingface
 ENV XDG_CACHE_HOME=/app/models_cache/xdg
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.11/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.11/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.11/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.11/site-packages/nvidia/cuda_nvrtc/lib
 
 # Create a non-root user and group with a home directory
 RUN groupadd -r appgroup && useradd -m -r -g appgroup appuser

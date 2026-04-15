@@ -21,6 +21,13 @@ services:
       mpc-network:
         aliases:
           - backend
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   ollama:
     image: ollama/ollama:latest
@@ -30,14 +37,21 @@ services:
     restart: unless-stopped
     networks:
       - mpc-network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
 
   frontend:
     build: ./frontend
     container_name: mpc-frontend
     ports:
       - "90:80"
-    volumes:
-      - ./frontend/dist:/usr/share/nginx/html:ro
+    # volumes:
+    #   - ./frontend/dist:/usr/share/nginx/html:ro
     depends_on:
       - backend
     restart: unless-stopped

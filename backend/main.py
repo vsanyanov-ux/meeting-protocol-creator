@@ -38,6 +38,45 @@ if sys.platform == 'win32':
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
+# --- CUDA DLL Setup for Windows ---
+def setup_cuda_dlls():
+    if sys.platform == 'win32':
+        import site
+        # Add nvidia DLLs to path for faster-whisper/ctranslate2
+        # On Windows, PIP installs DLLs into site-packages/nvidia/xxx/bin
+        possible_sites = []
+        try:
+            possible_sites.extend(site.getsitepackages())
+        except: pass
+        
+        try:
+            user_site = site.getusersitepackages()
+            if user_site:
+                possible_sites.append(user_site)
+        except: pass
+            
+        found_any = False
+        for s in possible_sites:
+            nvidia_bins = [
+                os.path.join(s, "nvidia", "cublas", "bin"),
+                os.path.join(s, "nvidia", "cudnn", "bin"),
+                os.path.join(s, "nvidia", "cuda_nvrtc", "bin"),
+                os.path.join(s, "nvidia", "cuda_runtime", "bin"),
+            ]
+            for p in nvidia_bins:
+                if os.path.exists(p) and os.path.isdir(p):
+                    try:
+                        os.add_dll_directory(p)
+                        logger.info(f"Added CUDA DLL directory: {p}")
+                        found_any = True
+                    except Exception as e:
+                        logger.warning(f"Failed to add DLL directory {p}: {e}")
+        
+        if not found_any:
+            logger.warning("No NVIDIA CUDA DLL directories found in site-packages. GPU transcription might fail if cuBLAS/cuDNN is not in system PATH.")
+
+setup_cuda_dlls()
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup logic
@@ -104,7 +143,7 @@ def get_provider() -> BaseAIProvider:
         return LocalProvider(
             whisper_model_size=os.getenv("WHISPER_MODEL", "medium"),
             ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "qwen3:7b")
+            ollama_model=os.getenv("OLLAMA_MODEL", "qwen3.5:4b")
         )
     else:
         raise ValueError(f"Unknown AI_PROVIDER: {provider_type}")

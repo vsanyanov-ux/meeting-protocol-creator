@@ -1,6 +1,22 @@
 # Changelog
 
 All notable changes to this project will be documented in this file.
+ 
+## [3.0.0] — 2026-04-15
+ 
+### Added
+- **Turbo Mode (GPU Acceleration)**: Full NVIDIA CUDA support for both **Faster-Whisper** and **Ollama**.
+- **Model Persistence**: Implemented a "warm model" strategy where AI models stay resident in VRAM, reducing end-to-end latency for subsequent requests.
+- **Enhanced Observability**: Added granular `transcription` tracing to the Langfuse dashboard to monitor Whisper performance.
+- **Hardware Optimization**: Fine-tuned the pipeline for consumer GPUs (RTX 3060 12GB) and WSL2 environments with resource constraints.
+ 
+### Improved
+- **Pipeline Speed**: Achieved a **3.5x speedup** for local processing (from ~5m down to <1.5m for standard clips).
+- **Stability**: Resolved critical VRAM contention and OOM crashes by streamlining model lifecycle management.
+- **Docker Integration**: Simplified GPU reservation logic in `docker-compose.yml`.
+ 
+### Changed
+- **Default STT**: Switched default local transcription model to `small` (cuda) for the optimal quality/speed ratio.
 
 ## [2.1.3] — 2026-04-11
 

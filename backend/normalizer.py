@@ -69,7 +69,6 @@ def normalize_file(filepath: str, file_id: str) -> Dict[str, Any]:
     if is_media:
         try:
             out_path = os.path.join(os.path.dirname(filepath), f"normalized_{file_id}.ogg")
-            # FFmpeg is smart enough to probe content even without ext
             result = subprocess.run([
                 "ffmpeg", "-y", "-i", filepath,
                 "-c:a", "libopus", "-b:a", "24k", "-ac", "1", "-ar", "16000",
@@ -80,15 +79,27 @@ def normalize_file(filepath: str, file_id: str) -> Dict[str, Any]:
             if result.returncode == 0:
                 return {"type": "audio", "path": out_path}
             else:
-                logger.error(f"FFmpeg failed: {result.stderr}")
-                # Fallback: if it was a false positive media, return error later
+                logger.warning(f"FFmpeg failed to probe media, trying to read as text fallback: {result.stderr}")
         except Exception as e:
             logger.error(f"File normalization crash: {e}")
 
-    # 3. Last resort fallback for common extensions if magic failed
+    # 3. Text fallback: Try reading as text if FFmpeg failed or MIME is generic
+    try:
+        # Check if it's small enough to be a text snippet or if we should try anyway
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+            # If it's valid UTF-8 and not binary trash, we treat it as text
+            if all(ord(c) < 65535 for c in content[:1000]):
+                logger.info(f"Successfully recovered file {file_id} as text via fallback.")
+                return {"type": "text", "content": content}
+    except UnicodeDecodeError:
+        pass
+    except Exception as e:
+        logger.debug(f"Text fallback failed: {e}")
+
+    # 4. Last resort fallback for common extensions
     ext = filepath.split(".")[-1].lower() if "." in filepath else ""
     if ext in ["mp3", "wav", "m4a", "ogg", "aac", "mp4"]:
-        # Try one more time with FFmpeg
         try:
             out_path = os.path.join(os.path.dirname(filepath), f"normalized_{file_id}.ogg")
             subprocess.run(["ffmpeg", "-y", "-i", filepath, "-c:a", "libopus", "-vn", out_path], check=True)

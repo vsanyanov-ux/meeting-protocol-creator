@@ -18,3 +18,7 @@ pytest-mock==1.1.0
 python-magic==0.4.27
 faster-whisper==1.2.1
 ollama==0.6.1
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
+nvidia-cuda-runtime-cu12
+torch
