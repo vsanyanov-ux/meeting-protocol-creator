@@ -15,10 +15,10 @@ from loguru import logger
 _langfuse_instance = None
 _langfuse_enabled = None
 
-# Тарифы Yandex Cloud (в USD, по курсу ~92 RUB)
+# Тарифы Yandex Cloud (в USD, по курсу ~80 RUB)
 YANDEX_PRICING = {
-    "yandexgpt": (1.2 / 1000) / 92,      # ~$0.0000130 за токен
-    "speechkit_stt": (0.6 / 60) / 92,    # ~$0.000108 за секунду
+    "yandexgpt": (1.2 / 1000) / 80,      # ~$0.0000130 за токен
+    "speechkit_stt": (0.6 / 60) / 80,    # ~$0.000108 за секунду
 }
 
 def get_langfuse() -> Optional[Any]:
