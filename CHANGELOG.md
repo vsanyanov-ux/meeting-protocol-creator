@@ -1,114 +1,107 @@
-# Changelog
+# История изменений
 
-All notable changes to this project will be documented in this file.
+Все значимые изменения в этом проекте будут фиксироваться в данном файле.
  
 ## [4.0.0] — 2026-04-16
 
-### Added
-- **Enterprise Robustness**: Implemented a 3-tier hardware fallback: **GPU (CUDA) → CPU → Cloud (Yandex)**. Automatically switches processing mode if resources are exhausted or unavailable.
-- **Smart Diarization**:
-    - **Cloud v2**: Native speaker separation for long recordings via Yandex SpeechKit LongRunning API.
-    - **AI-Linguistic**: Context-aware speaker identification for short clips via LLM post-processing.
-- **AI-Auditor 2.0**: The Auditor's quality report (completeness, accuracy, hallucinations) is now embedded directly into the final DOCX protocol.
-- **Enterprise Monitoring**: Added automated scoring (1-5 stars) from the AI-Auditor to the Langfuse dashboard.
-- **Pilot Tracker**: New corporate tool for tracking ROI and quality metrics across pilot projects.
+### Добавлено
+- **Корпоративная отказоустойчивость**: Реализована трехуровневая система резервирования оборудования: **GPU (CUDA) → CPU → Облако (Yandex)**. Система автоматически переключает режим обработки при нехватке ресурсов или сбое оборудования.
+- **AI-Аудитор 2.0**: Отчет о качестве от Аудитора (полнота, точность, отсутствие галлюцинаций) теперь встраивается напрямую в финальный DOCX-протокол.
+- **Корпоративный мониторинг**: Добавлена автоматическая передача оценок (1-5 звезд) от AI-Аудитора в панель управления Langfuse.
+- **Pilot Tracker**: Новый инструмент для корпоративных клиентов для отслеживания ROI и метрик качества в рамках пилотных проектов.
 
-### Improved
-- **UI/UX Rebranding**: Unified system status badge (Backend/LLM) and transitioned all AI terminology to **LLM**.
-- **Observability**: Fully migrated to **Langfuse SDK v4** with stable trace IDs and granular error reporting.
-- **Performance**: Optimized Faster-Whisper DLL loading on Windows and fixed VRAM contention during model switching.
+### Улучшено
+- **Ребрендинг UI/UX**: Унифицирован индикатор статуса системы (Backend/LLM), во всем интерфейсе терминология заменена на **LLM**.
+- **Наблюдаемость (Observability)**: Полный переход на **Langfuse SDK v4** со стабильными ID трассировки и детальной отчетностью об ошибках.
+- **Производительность**: Оптимизирована загрузка DLL для Faster-Whisper на Windows, исправлены конфликты VRAM при переключении моделей.
 
-### Fixed
-- **Connectivity**: Resolved "All connection attempts failed" bug when communicating with local Ollama on Windows.
-- **Backend Stability**: Fixed critical race conditions in the multi-provider routing logic.
+### Исправлено
+- **Связь**: Устранена ошибка "All connection attempts failed" при взаимодействии с локальным Ollama на Windows.
+- **Стабильность бэкенда**: Исправлены критические состояния гонки в логике роутинга между провайдерами.
 
 ## [3.1.0] — 2026-04-16
  
-### Changed
-- **Rebranding**: Officially renamed the project from **PRO-Толк** to **Протоколист**. Updated all documentation, branding, and UI components.
+### Изменено
+- **Ребрендинг**: Проект официально переименован из **PRO-Толк** в **Протоколист**. Обновлена вся документация, айдентика и компоненты интерфейса.
  
 ## [3.0.0] — 2026-04-15
  
-### Added
-- **Turbo Mode (GPU Acceleration)**: Full NVIDIA CUDA support for both **Faster-Whisper** and **Ollama**.
-- **Model Persistence**: Implemented a "warm model" strategy where AI models stay resident in VRAM, reducing end-to-end latency for subsequent requests.
-- **Enhanced Observability**: Added granular `transcription` tracing to the Langfuse dashboard to monitor Whisper performance.
-- **Hardware Optimization**: Fine-tuned the pipeline for consumer GPUs (RTX 3060 12GB) and WSL2 environments with resource constraints.
+### Добавлено
+- **Turbo Mode (GPU Acceleration)**: Полная поддержка NVIDIA CUDA для **Faster-Whisper** и **Ollama**.
+- **модель Persistence**: Реализована стратегия "горячих моделей", при которой модели ИИ остаются в VRAM, снижая задержки при повторных запросах.
+- **Улучшенный мониторинг**: Добавлена гранулярная трассировка транскрипции в Langfuse для контроля производительности Whisper.
+- **Оптимизация под "железо"**: Конвейер настроен для пользовательских GPU (RTX 3060 12GB) и сред WSL2 с ограничениями ресурсов.
  
-### Improved
-- **Pipeline Speed**: Achieved a **3.5x speedup** for local processing (from ~5m down to <1.5m for standard clips).
-- **Stability**: Resolved critical VRAM contention and OOM crashes by streamlining model lifecycle management.
-- **Docker Integration**: Simplified GPU reservation logic in `docker-compose.yml`.
+### Улучшено
+- **Скорость конвейера**: Достигнуто **ускорение в 3.5 раза** для локальной обработки (с ~5 мин до <1.5 мин для стандартных записей).
+- **Стабильность**: Решены критические проблемы с конкуренцией за VRAM и вылетами по OOM за счет оптимизации жизненного цикла моделей.
+- **Интеграция с Docker**: Упрощена логика резервирования GPU в `docker-compose.yml`.
  
-### Changed
-- **Default STT**: Switched default local transcription model to `small` (cuda) for the optimal quality/speed ratio.
-
+### Изменено
+- **STT по умолчанию**: Стандартная локальная модель транскрипции заменена на `small` (cuda) для оптимального баланса качества и скорости.
+ 
 ## [2.1.3] — 2026-04-11
-
-### Added
--   **Rebranding**: Officially renamed the project to **PRO-Толк** (AI Protocol Assistant). Updated UI titles, subtitles, and documentation.
--   **Accurate Cost Mapping**: Implemented 92 RUB/USD exchange rate for Yandex Cloud AI services to ensure correct cost tracking in the Langfuse dashboard.
--   **Dynamic Model Indicators**: Updated frontend buttons to show "Local" or "Online" status based on the selected AI provider.
-
-### Fixed
--   **Langfuse SDK v4 Hardening**: Resolved critical ID validation conflicts by separating 32-hex Trace IDs and 16-hex Span IDs. Fixed trace nesting using `trace_context`.
--   **STT Pricing**: Implemented duration-based pricing for transcription logs.
-
-
+ 
+### Добавлено
+- **Ребрендинг**: Проект официально переименован в **PRO-Толк** (ИИ-ассистент протоколирования). Обновлены заголовки, подзаголовки и документация.
+- **Интеграция курсов валют**: Установлен курс 92 руб/доллар для сервисов Yandex Cloud AI для корректного отображения затрат в Langfuse.
+- **Динамические индикаторы**: В интерфейсе добавлены статусы "Local" или "Online" в зависимости от выбранного провайдера.
+ 
+### Исправлено
+- **Стабилизация Langfuse SDK v4**: Исправлены конфликты валидации ID за счет разделения Trace ID (32 hex) и Span ID (16 hex). Исправлена вложенность трасс через `trace_context`.
+- **STT Тарификация**: Внедрена логика стоимости на основе длительности записи для логов транскрипции.
+ 
 ## [2.1.2] — 2026-04-10
-
-### Added
--   **Strict Observability Filtering**: Implemented `should_export_span` filter in the Langfuse client to eliminate auto-instrumentation noise from third-party libraries (httpx, etc.).
--   **Automated Cleanup**: Created a utility script for batch deleting junk traces from the Langfuse dashboard.
-
-### Fixed
--   **Langfuse v4 Compatibility**: Fixed critical hex ID formatting error and implemented v4-compatible trace initialization using `trace_context`.
-
-### Improved
--   **Email Antispam**: Added `Auto-Submitted` and `X-Auto-Response-Suppress` headers to reduce spam scores and prevent auto-reply loops.
-
+ 
+### Добавлено
+- **Фильтрация трасс**: В клиенте Langfuse реализован фильтр `should_export_span` для устранения шума авто-инструментации библиотек (httpx и др.).
+- **Авто-очистка**: Создан скрипт для пакетного удаления лишних трасс из панели Langfuse.
+ 
+### Исправлено
+- **Совместимость с Langfuse v4**: Исправлена ошибка форматирования HEX ID и внедрена инициализация трасс через `trace_context`.
+ 
+### Улучшено
+- **Антиспам для Email**: Добавлены заголовки `Auto-Submitted` и `X-Auto-Response-Suppress` для снижения спам-рейтинга писем.
+ 
 ## [2.1.1] — 2026-04-10
-
-### Fixed
--   **Langfuse v4 (OpenTelemetry) Compatibility**: Fixed critical `ValueError` in trace initialization by switching to 32-bit hex IDs (without dashes) and better attribute handling.
--   **SMTP Deliverability**: Resolved error `554 5.7.1 Message rejected under suspicion of SPAM` for Yandex. Added proper `Message-ID`, `Date`, and HTML content to outgoing emails.
--   **Backend Robustness**: Fixed indentation issues and improved error handling in the main processing pipeline. Status updates now continue even if optional steps (like emailing) fail.
-
-### Changed
--   **Observability**: Renamed trace root for clearer identification in Langfuse.
--   **Security**: Synchronized sender identity with verified SMTP credentials to improve mail server trust.
-
+ 
+### Исправлено
+- **Совместимость с Langfuse v4 (OpenTelemetry)**: Исправлена критическая ошибка `ValueError` при инициализации трасс за счет перехода на 32-битные HEX идентификаторы.
+- **Доставляемость SMTP**: Решена ошибка `554 5.7.1 Message rejected under suspicion of SPAM` для Яндекс.Почты. Добавлены заголовки `Message-ID`, `Date` и HTML-контент.
+- **Надежность бэкенда**: Исправлены ошибки отступов и улучшена обработка ошибок в основном конвейере. Обновления статуса теперь продолжаются, даже если отправка почты дала сбой.
+ 
+### Изменено
+- **Мониторинг**: Переименованы корневые трассы для более четкой идентификации в Langfuse.
+- **Безопасность**: Синхронизирована идентичность отправителя с верифицированными данными SMTP.
+ 
 ## [2.1.0] — 2026-04-10
-
-### Added
--   **Email Notifications**: Initial deployment of the email delivery system using Yandex SMTP with SSL/TLS support.
-
+ 
+### Добавлено
+- **Email-уведомления**: Первоначальное развертывание системы доставки почты через Yandex SMTP с поддержкой SSL/TLS.
+ 
 ## [2.0.0] — 2026-04-09
-
-### Added
-- **Offline / Local Mode**: Full support for local execution using **Ollama** and **Faster-Whisper**. Integrated **Qwen 2.5 (3B)** as the default local LLM.
-- **Hybrid AI Router**: Ability to switch between Yandex Cloud and Local providers via `.env` configuration or dedicated `.bat` scripts.
-- **Langfuse Observability**: Major transition to Langfuse SDK v4 for tracing all pipeline stages, including transcription, generation, and verification.
-- **Cost Estimation**: Integrated cost and token usage tracking for both Yandex and local providers within the tracing dashboard.
-- **AI-Auditor (Self-Critique)**: Automated verification mechanism that audits the generated protocol against the original transcription to prevent hallucinations.
-- **Smart Tables**: Enhanced protocol formatting with automatic Markdown/Word table generation for action items and decisions.
-- **Environment Management**: Added `switch_to_local.bat` and `switch_to_yandex.bat` for quick environment setup.
-
-### Fixed
-- **Pipeline Data Loss**: Fixed a critical bug where transcription and auditing results were not persisted correctly during the final protocol generation step.
-- **Trace Missing Steps**: Resolved an issue where Langfuse traces were only recorded for certain actions, leaving gaps in the observability history.
-- **Local STT Stability**: Improved error handling and resource management for long-duration audio transcriptions on CPU/GPU.
-- **Validation Errors**: Fixed Pydantic model discrepancies when switching between different LLM providers with varying output formats.
-
+ 
+### Добавлено
+- **Офлайн / Локальный режим**: Полная поддержка локального запуска через **Ollama** и **Faster-Whisper**. Интегрирована модель **Qwen 2.5 (3B)** как основной локальный LLM.
+- **Гибридный AI-роутер**: Возможность переключения между Yandex Cloud и локальными провайдерами через `.env` или `.bat` скрипты.
+- **Мониторинг Langfuse**: Глобальный переход на Langfuse SDK v4 для трассировки всех этапов: транскрипция, генерация, верификация.
+- **Оценка стоимости**: Интегрирован расчет затрат и токенов для Яндекс и локальных моделей в личном кабинете мониторинга.
+- **AI-Аудитор (Самокритика)**: Автоматизированный механизм верификации, проверяющий протокол на соответствие транскрипции для предотвращения галлюцинаций.
+- **Умные таблицы**: Улучшенное форматирование протоколов с автогенерацией таблиц Markdown/Word для задач и решений.
+- **Управление средой**: Добавлены `switch_to_local.bat` и `switch_to_yandex.bat` для быстрой настройки.
+ 
+### Исправлено
+- **Потеря данных**: Исправлен баг, при котором результаты транскрипции и аудита не сохранялись на финальном этапе генерации.
+- **Пропуски в трассировке**: Решена проблема, когда трассы в Langfuse записывались только для части действий.
+- **Стабильность локального STT**: Улучшена обработка ошибок и управление ресурсами при длительной транскрипции на CPU/GPU.
+- **Ошибки валидации**: Устранены расхождения моделей Pydantic при переключении между провайдерами ИИ.
+ 
 ## [1.0.0] - 2026-04-04
-
-### Added
-- **Core Engine**: Automated meeting summarization using YandexGPT and Yandex SpeechKit.
-- **Multi-format Support**: Capability to process Audio (MP3, WAV, M4A, etc.), Video (MP4, WEBM), and Documents (PDF, DOCX, TXT).
-- **Professional Outputs**: Automatic generation of formatted DOCX protocols with structured tables for action items.
-- **AI-Auditor**: Built-in verification mechanism (Self-Critique) where the AI audits its own protocol against the transcription for accuracy.
-- **Hybrid Diarization**: Smart speaker separation that works even without complex S3 bucket configurations.
-- **UI/UX**: Modern, premium React frontend with glassmorphism, smooth animations (Framer Motion), and real-time status polling.
-- **Robust CI/CD**: Consolidated GitHub Actions pipeline for both backend and frontend testing.
-- **Testing Suite**: Added Vitest and React Testing Library for frontend stability.
-- **Docker Production Ready**: Optimized Multi-stage Dockerfiles for both services and Nginx proxy configuration.
+ 
+### Добавлено
+- **Основной движок**: Автоматическое резюмирование встреч с использованием YandexGPT и Yandex SpeechKit.
+- **Мультиформатность**: Поддержка аудио (MP3, WAV, M4A и др.), видео (MP4, WEBM) и документов (PDF, DOCX, TXT).
+- **Профессиональный вывод**: Автоматическое формирование DOCX протоколов со структурами таблиц.
+- **AI-Аудитор**: Встроенный механизм проверки точности протокола.
+- **UI/UX**: Современный премиальный интерфейс на React с эффектами стекломорфизма и анимациями.
+- **Docker Production Ready**: Оптимизированные многоэтапные Docker-файлы для всех сервисов и конфигурация прокси Nginx.

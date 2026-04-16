@@ -40,9 +40,6 @@ graph TD
 
 ## ✨ Ключевые особенности v4.0.0
 - **🛡️ Отказоустойчивость (3-Tier Fallback):** Уникальная система автоматического переключения **GPU → CPU → Cloud**. Если ваша видеокарта перегружена или недоступна, система сама выберет оптимальный путь обработки.
-- **🎙️ Умная диаризация:** 
-    - **Cloud v2 Native**: Разделение спикеров через Yandex SpeechKit (LongRunning).
-    - **AI-Linguistic**: Определение ролей и участников по смыслу беседы силами LLM.
 - **🛡️ AI-Аудитор 2.0:** Встроенный контроль качества с автоматическим выставлением оценок (Completeness, Accuracy) и выносом отчета аудитора в финал протокола.
 - **📈 Корпоративный контроль:** Интеграция с **Langfuse SDK v4** для мониторинга затрат и качества, а также Pilot Tracker для оценки ROI внедрения.
 
@@ -55,7 +52,7 @@ graph TD
 | **Frontend** | React, Vite, Framer Motion, Glassmorphism UI |
 | **Backend** | Python, FastAPI, Pydantic |
 | **Local AI** | Ollama (Qwen 3.5), Faster-Whisper (CUDA Optimized) |
-| **Cloud AI** | Yandex SpeechKit v2 (Diarization), Yandex GPT (Latest) |
+| **Cloud AI** | Yandex SpeechKit v2, Yandex GPT (Latest) |
 | **Observability** | Langfuse v4 (SDK + UI) |
 | **Tracing** | OpenTelemetry compatible status tracking |
 
