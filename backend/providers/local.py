@@ -19,8 +19,8 @@ from exceptions import HardwareError
 class LocalProvider(BaseAIProvider):
     def __init__(self, 
                  whisper_model_size: str = "medium", 
-                 ollama_url: str = "http://localhost:11434",
-                 ollama_model: str = "qwen2.5:3b",
+                 ollama_url: str = "http://127.0.0.1:11434",
+                 ollama_model: str = "qwen3.5:9b",
                  device: Optional[str] = None):
         self.whisper_model_size = whisper_model_size
         self.ollama_url = ollama_url
@@ -78,9 +78,12 @@ class LocalProvider(BaseAIProvider):
         # Clear CUDA cache if using GPU
         if self.device == "cuda":
             try:
-                torch.cuda.empty_cache()
-                torch.cuda.ipc_collect()
-                logger.info("--- MEMORY CLEANUP: CUDA cache cleared ---")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.ipc_collect()
+                    logger.info("--- MEMORY CLEANUP: CUDA cache cleared successfully ---")
+                else:
+                    logger.warning("--- MEMORY CLEANUP: CUDA not available in Torch, skipping cache clear ---")
             except Exception as e:
                 logger.warning(f"Could not clear CUDA cache: {e}")
                 
@@ -171,11 +174,12 @@ class LocalProvider(BaseAIProvider):
             duration_sec = info.duration
             latency_sec = time.time() - t_start
             
-            # WE NO LONGER UNLOAD AFTER EVERY SESSION TO KEEP IT FAST
-            # await self._cleanup_memory()
+            # WITH 9B+ MODELS, WE MUST UNLOAD AFTER EVERY SESSION TO FREE VRAM FOR OLLAMA
+            await self._cleanup_memory()
             
-            # --- REMOVE MEMORY STABILITY WAIT ---
-            # await asyncio.sleep(5)
+            # --- MEMORY STABILITY WAIT ---
+            # Wait 2 seconds for GPU driver to settle
+            await asyncio.sleep(2)
             
             trace.end_span("transcription", {
                 "duration_sec": duration_sec,
@@ -227,13 +231,16 @@ class LocalProvider(BaseAIProvider):
             "stream": False,
             "options": {
                 "temperature": temperature,
+                "num_predict": 4096,
+                "num_ctx": 16384,
             }
         }
 
         max_retries = 2
         for attempt in range(max_retries):
             try:
-                async with httpx.AsyncClient(timeout=300.0) as client:
+                # Increased timeout to 900s (15 min) for large context processing
+                async with httpx.AsyncClient(timeout=900.0) as client:
                     response = await client.post(f"{self.ollama_url}/api/chat", json=payload)
                     
                     if response.status_code == 200:
@@ -263,29 +270,37 @@ class LocalProvider(BaseAIProvider):
     async def create_protocol(self, transcription: str) -> Dict[str, Any]:
         system_text = (
             "Ты — ведущий эксперт по техническому документообороту и промышленному инжинирингу. Твоя задача — составить официальный протокол совещания на основе расшифровки.\n\n"
-            "ПРАВИЛА:\n"
-            "1. ОБЯЗАТЕЛЬНО сохраняй технические маркировки, артикулы, названия сплавов, коды изделий (например: марки стали 08Х18Н10Т, ГОСТы, чертежи).\n"
-            "2. Будь точен в числовых параметрах и единицах измерения.\n"
-            "3. Используй строгий технический стиль.\n\n"
-            "СТРУКТУРА:\n## Общая информация\n## Участники\n## Повестка дня\n## Ход обсуждения\n"
+            "ОБЯЗАТЕЛЬНЫЕ ТРЕБОВАНИЯ:\n"
+            "1. ЯЗЫК: ВЕСЬ ответ должен быть СТРОГО на РУССКОМ языке. Использование английского языка ЗАПРЕЩЕНО (кроме технических кодов и брендов).\n"
+            "2. СОХРАННОСТЬ ДАННЫХ: Обязательно сохраняй технические маркировки, артикулы, названия сплавов, коды изделий (например: марки стали 08Х18Н10Т, ГОСТы, чертежи).\n"
+            "3. ТОЧНОСТЬ: Будь точен в числовых параметрах и единицах измерения.\n"
+            "4. ТАБЛИЦА ПОРУЧЕНИЙ: Секцию 'Принятые решения и Поручения' ОБЯЗАТЕЛЬНО оформляй в виде Markdown-таблицы. ЗАПРЕЩЕНО использовать списки для задач.\n\n"
+            "СТРУКТУРА ОТВЕТА:\n"
+            "## Общая информация\n"
+            "## Участники\n"
+            "## Повестка дня\n"
+            "## Ход обсуждения\n"
             "## Принятые решения и Поручения\n"
             "| № | Поручение | Ответственный | Срок исполнения |\n"
             "|---|-----------|---------------|------------------|\n"
-            "| 1 | Название задачи | ФИО ответственного | Срок |\n\n"
+            "| 1 | Описание задачи | Фамилия И.О. | ДД.ММ.ГГГГ или статус |\n\n"
             "## Нерешенные вопросы\n\n"
-            "Будь лаконичным. Секцию 'Принятые решения и Поручения' ОБЯЗАТЕЛЬНО оформляй СТРОГО в виде Markdown-таблицы (как в примере выше)."
+            "ПИШИ ТОЛЬКО НА РУССКОМ. БУДЬ ЛАКОНИЧНЫМ И СТРОГИМ."
         )
         messages = [
             {"role": "system", "content": system_text},
-            {"role": "user", "content": f"Составь подробный протокол совещания:\n\n{transcription}"}
+            {"role": "user", "content": f"Внимательно изучи расшифровку и составь подробный протокол НА РУССКОМ ЯЗЫКЕ:\n\n{transcription}"}
         ]
-        return await self._call_ollama(messages)
+        
+        logger.info(f"--- PROTOCOL GENERATION START: {len(transcription)} chars (~{len(transcription)//4} tokens) ---")
+        return await self._call_ollama(messages, temperature=0.2)
 
     async def verify_protocol(self, transcription: str, protocol: str) -> Dict[str, Any]:
         system_text = (
             "Ты — строгий корпоративный аудитор. Твоя задача: Сравнить РАСШИФРОВКУ и готовый ПРОТОКОЛ. \n"
+            "ОБЯЗАТЕЛЬНО пиши отчет ТОЛЬКО НА РУССКОМ ЯЗЫКЕ.\n"
             "Найди любые расхождения, пропущенные поручения или фактические ошибки. \n"
-            "Выдай краткий отчет: что проверено и найдены ли критические ошибки."
+            "Выдай краткий отчет на русском языке: что проверено и найдены ли критические ошибки."
         )
         messages = [
             {"role": "system", "content": system_text},
