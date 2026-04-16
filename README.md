@@ -41,6 +41,7 @@ graph TD
 ## ✨ Ключевые особенности v4.1.0
 - **🛡️ Отказоустойчивость (3-Tier Fallback):** Уникальная система автоматического переключения **GPU → CPU → Cloud**. Если ваша видеокарта перегружена или недоступна, система сама выберет оптимальный путь обработки.
 - **🛡️ AI-Аудитор 2.0:** Встроенный контроль качества с автоматическим выставлением оценок (Completeness, Accuracy) и выносом отчета аудитора в финал протокола.
+- **🚀 Мощная локальная модель (Qwen 3.5 9B):** Переход на модель 9B обеспечил стабильное качество генерации протоколов и таблиц на уровне облачных решений.
 - **📈 Корпоративный контроль:** Интеграция с **Langfuse SDK v4** для мониторинга затрат и качества, а также Pilot Tracker для оценки ROI внедрения.
 
 ---
@@ -51,7 +52,7 @@ graph TD
 |-----------|------------|
 | **Frontend** | React, Vite, Framer Motion, Glassmorphism UI |
 | **Backend** | Python, FastAPI, Pydantic |
-| **Local AI** | Ollama (Qwen 3.5), Faster-Whisper (CUDA Optimized) |
+| **Local AI** | Ollama (Qwen 3.5 9B), Faster-Whisper (CUDA Optimized) |
 | **Cloud AI** | Yandex SpeechKit v2, Yandex GPT (Latest) |
 | **Observability** | Langfuse v4 (SDK + UI) |
 | **Tracing** | OpenTelemetry compatible status tracking |
