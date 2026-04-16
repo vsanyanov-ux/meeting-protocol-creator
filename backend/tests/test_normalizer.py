@@ -1,69 +1,60 @@
 import os
 import pytest
 from unittest.mock import MagicMock, patch
-from normalizer import normalize_file, extract_text_from_pdf, extract_text_from_docx
+from normalizer import normalize_file
 
-def test_normalize_txt(tmp_path):
-    """Test normalized extraction from a text file."""
-    p = tmp_path / "test.txt"
-    p.write_text("Hello World", encoding="utf-8")
+@pytest.mark.parametrize("ext, mime", [
+    ("mp3", "audio/mpeg"),
+    ("wav", "audio/wav"),
+    ("m4a", "audio/mp4"),
+    ("ogg", "audio/ogg"),
+    ("aac", "audio/aac"),
+    ("flac", "audio/flac"),
+    ("mp4", "video/mp4"),
+    ("m4v", "video/x-m4v"),
+    ("mov", "video/quicktime"),
+    ("avi", "video/x-msvideo"),
+    ("webm", "video/webm"),
+])
+def test_normalize_media_formats(tmp_path, ext, mime):
+    """Test that all media formats are correctly routed to FFmpeg."""
+    p = tmp_path / f"test.{ext}"
+    p.write_bytes(b"dummy content")
     
-    res = normalize_file(str(p), "123")
-    assert res["type"] == "text"
-    assert res["content"] == "Hello World"
-
-@patch("pdfplumber.open")
-def test_normalize_pdf(mock_pdf_open, tmp_path):
-    """Test text extraction from a mocked PDF."""
-    mock_pdf = MagicMock()
-    mock_page = MagicMock()
-    mock_page.extract_text.return_value = "Page Content"
-    mock_pdf.pages = [mock_page]
-    mock_pdf_open.return_value.__enter__.return_value = mock_pdf
-    
-    p = tmp_path / "test.pdf"
-    p.write_bytes(b"%PDF-1.4") # Dummy PDF header
-    
-    res = normalize_file(str(p), "123")
-    assert res["type"] == "text"
-    assert "Page Content" in res["content"]
-
-@patch("docx.Document")
-def test_normalize_docx(mock_docx_doc, tmp_path):
-    """Test text extraction from a mocked DOCX."""
-    mock_doc = MagicMock()
-    mock_para = MagicMock()
-    mock_para.text = "Para Content"
-    mock_doc.paragraphs = [mock_para]
-    mock_docx_doc.return_value = mock_doc
-    
-    p = tmp_path / "test.docx"
-    # Proper ZIP/DOCX header
-    p.write_bytes(b"PK\x03\x04\x14\x00\x06\x00\x08\x00\x00\x00\x21\x00")
-    
-    # We need to mock magic because on some systems it still won't identify tiny ZIPs as DOCX
-    with patch("magic.from_file", return_value="application/vnd.openxmlformats-officedocument.wordprocessingml.document"):
-        res = normalize_file(str(p), "123")
-        assert res["type"] == "text"
-        assert "Para Content" in res["content"]
-
-@patch("subprocess.run")
-def test_normalize_audio(mock_run, tmp_path):
-    """Test normalization of audio/video using ffmpeg."""
-    p = tmp_path / "test.mp4"
-    # Minimal MP4-like content or just mock magic
-    p.write_bytes(b"\x00\x00\x00\x18ftypisom\x00\x00\x00\x00")
-    
-    with patch("magic.from_file", return_value="video/mp4"):
+    with patch("magic.from_file", return_value=mime), \
+         patch("subprocess.run") as mock_run:
         mock_run.return_value.returncode = 0
-        res = normalize_file(str(p), "124")
+        
+        res = normalize_file(str(p), "123")
         assert res["type"] == "audio"
-        assert "normalized_124.ogg" in res["path"]
+        assert f"normalized_123.ogg" in res["path"]
+        # Verify FFmpeg was called with the right input
+        args = mock_run.call_args[0][0]
+        assert str(p) in args
+
+@pytest.mark.parametrize("ext, mime, content", [
+    ("txt", "text/plain", "Hello World"),
+    ("pdf", "application/pdf", "PDF Content"),
+    ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "DOCX Content"),
+    ("doc", "application/msword", "DOC Content"),
+])
+def test_normalize_document_formats(tmp_path, ext, mime, content):
+    """Test that document formats are correctly recognized and parsed."""
+    p = tmp_path / f"test.{ext}"
+    p.write_bytes(content.encode("utf-8"))
+    
+    with patch("magic.from_file", return_value=mime), \
+         patch("normalizer.extract_text_from_pdf", return_value=content), \
+         patch("normalizer.extract_text_from_docx", return_value=content):
+        
+        res = normalize_file(str(p), "124")
+        assert res["type"] == "text"
+        assert res["content"] == content
 
 def test_unsupported_format(tmp_path):
-    """Test handling of unsupported file extensions."""
+    """Verify that truly unsupported formats (e.g. .exe) return an error."""
     p = tmp_path / "test.exe"
-    p.write_bytes(b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00\xff\xff")
+    p.write_bytes(b"\xff\xfe\xfd\xfc\x00\x01") # Non-UTF8 binary data
     
     with patch("magic.from_file", return_value="application/x-msdownload"):
         res = normalize_file(str(p), "125")

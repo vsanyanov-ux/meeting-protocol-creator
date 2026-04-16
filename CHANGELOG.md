@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
  
+## [4.0.0] — 2026-04-16
+
+### Added
+- **Enterprise Robustness**: Implemented a 3-tier hardware fallback: **GPU (CUDA) → CPU → Cloud (Yandex)**. Automatically switches processing mode if resources are exhausted or unavailable.
+- **Smart Diarization**:
+    - **Cloud v2**: Native speaker separation for long recordings via Yandex SpeechKit LongRunning API.
+    - **AI-Linguistic**: Context-aware speaker identification for short clips via LLM post-processing.
+- **AI-Auditor 2.0**: The Auditor's quality report (completeness, accuracy, hallucinations) is now embedded directly into the final DOCX protocol.
+- **Enterprise Monitoring**: Added automated scoring (1-5 stars) from the AI-Auditor to the Langfuse dashboard.
+- **Pilot Tracker**: New corporate tool for tracking ROI and quality metrics across pilot projects.
+
+### Improved
+- **UI/UX Rebranding**: Unified system status badge (Backend/LLM) and transitioned all AI terminology to **LLM**.
+- **Observability**: Fully migrated to **Langfuse SDK v4** with stable trace IDs and granular error reporting.
+- **Performance**: Optimized Faster-Whisper DLL loading on Windows and fixed VRAM contention during model switching.
+
+### Fixed
+- **Connectivity**: Resolved "All connection attempts failed" bug when communicating with local Ollama on Windows.
+- **Backend Stability**: Fixed critical race conditions in the multi-provider routing logic.
+
+## [3.1.0] — 2026-04-16
+ 
+### Changed
+- **Rebranding**: Officially renamed the project from **PRO-Толк** to **Протоколист**. Updated all documentation, branding, and UI components.
+ 
 ## [3.0.0] — 2026-04-15
  
 ### Added

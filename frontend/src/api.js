@@ -6,18 +6,34 @@ const api = axios.create({
   baseURL: API_BASE_URL,
 });
 
-export const uploadMeeting = async (file, email) => {
+export const uploadMeeting = async (file, email, provider, existingFileId = null, forceCpu = false) => {
   const formData = new FormData();
-  formData.append('file', file);
-  if (email) {
-    formData.append('email', email);
+  
+  if (file) {
+    formData.append('file', file, file.name || 'blob');
   }
-  const response = await api.post('/process-meeting', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data',
-    },
+  
+  if (email) formData.append('email', email);
+  if (provider) formData.append('provider', provider);
+  if (existingFileId) formData.append('existing_file_id', existingFileId);
+  if (forceCpu) formData.append('force_cpu', 'true');
+
+  const url = `${API_BASE_URL}/process-meeting`;
+
+  const response = await fetch(url, {
+    method: 'POST',
+    body: formData,
+    // Note: Do NOT set Content-Type header, fetch will handle it with boundary
   });
-  return response.data;
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    const error = new Error(errorData.detail || 'Upload failed');
+    error.response = { data: errorData };
+    throw error;
+  }
+
+  return response.json();
 };
 
 export const getProcessingStatus = async (fileId) => {

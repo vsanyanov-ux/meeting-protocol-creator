@@ -16,6 +16,15 @@ def test_process_meeting_invalid_extension(client):
     assert response.status_code == 400
     assert "Unsupported" in response.json()["detail"]
 
+def test_process_meeting_file_too_large(client):
+    """Verify 413 error for files exceeding 500MB."""
+    # We mock the headers to simulate a large file without actually sending it
+    huge_payload = b"0" * 1024
+    headers = {"Content-Length": str(600 * 1024 * 1024)} # 600 MB
+    response = client.post("/process-meeting", files={"file": ("huge.wav", huge_payload)}, headers=headers)
+    assert response.status_code == 413
+    assert "большой" in response.text
+
 def test_process_meeting_success(client):
     """Verify valid file upload and task ID generation."""
     files = {"file": ("test.mp3", b"fake-mp3-content", "audio/mpeg")}

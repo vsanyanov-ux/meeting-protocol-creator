@@ -1,6 +1,7 @@
-# PRO-Толк 📝🎥🎤
+# Протоколист 📝🎥🎤
 
-Автоматизированная система создания профессиональных протоколов совещаний из видео и аудиозаписей с использованием ИИ.
+Автоматизированная система создания профессиональных протоколов совещаний из видео и аудиозаписей с использованием ИИ. 
+**Версия 4.0.0 (Enterprise Ready)**
 
 ---
 
@@ -13,7 +14,6 @@ graph TD
     Proxy -->|"API Proxy /api"| Backend["🐍 Backend: FastAPI"]
     
     subgraph "Backend Layer (Docker)"
-        Backend -->|"MIME Validation"| Magic["🛡️ Magic Check"]
         Backend -->|Normalization| FFmpeg["🎵 FFmpeg"]
         
         FFmpeg --> AI_Router{"🤖 AI Provider Router"}
@@ -21,8 +21,12 @@ graph TD
         AI_Router -->|Local| Local_AI[/"🏠 Local AI: Ollama + Whisper"/]
         AI_Router -->|Cloud| Cloud_AI[/"☁️ Cloud AI: Yandex SpeechKit/GPT"/]
         
+        Local_AI -->|Hardware Failure| Fallback_CPU[/"🐢 CPU Fallback"/]
+        Fallback_CPU -->|Resource Error| Cloud_AI
+        
         Local_AI --> Docx["📄 Document Generation (Word)"]
         Cloud_AI --> Docx
+        Fallback_CPU --> Docx
     end
     
     Docx -->|SMTP| Email["📧 Email Service"]
@@ -34,23 +38,33 @@ graph TD
 
 ---
 
+## ✨ Ключевые особенности v4.0.0
+- **🛡️ Отказоустойчивость (3-Tier Fallback):** Уникальная система автоматического переключения **GPU → CPU → Cloud**. Если ваша видеокарта перегружена или недоступна, система сама выберет оптимальный путь обработки.
+- **🎙️ Умная диаризация:** 
+    - **Cloud v2 Native**: Разделение спикеров через Yandex SpeechKit (LongRunning).
+    - **AI-Linguistic**: Определение ролей и участников по смыслу беседы силами LLM.
+- **🛡️ AI-Аудитор 2.0:** Встроенный контроль качества с автоматическим выставлением оценок (Completeness, Accuracy) и выносом отчета аудитора в финал протокола.
+- **📈 Корпоративный контроль:** Интеграция с **Langfuse SDK v4** для мониторинга затрат и качества, а также Pilot Tracker для оценки ROI внедрения.
+
+---
+
 ## 🛠 Технологический стек
 
 | Компонент | Технологии |
 |-----------|------------|
 | **Frontend** | React, Vite, Framer Motion, Glassmorphism UI |
 | **Backend** | Python, FastAPI, Pydantic |
-| **Local ML** | Ollama (LLM), Faster-Whisper (STT - **CUDA**) |
-| **Cloud ML** | Yandex SpeechKit, Yandex GPT (Latest) |
-| **Core Tools** | FFmpeg, Magic-Python, Python-docx |
-| **Tracing** | Langfuse (SDK v4) |
+| **Local AI** | Ollama (Qwen 3.5), Faster-Whisper (CUDA Optimized) |
+| **Cloud AI** | Yandex SpeechKit v2 (Diarization), Yandex GPT (Latest) |
+| **Observability** | Langfuse v4 (SDK + UI) |
+| **Tracing** | OpenTelemetry compatible status tracking |
 
 ---
 
 ## ⭐ Сложность проекта
-**Сложность: ⭐⭐⭐⭐ (4 звезды - Middle+/Senior)**
+**Сложность: ⭐⭐⭐⭐⭐ (5 звезд - Senior / Enterprise)**
 
-*Проект сочетает в себе сложный аудио-процессинг, гибридную архитектуру нейросетей и динамическую генерацию корпоративной отчетности. Это не просто оболочка над GPT, а полноценный конвейер обработки данных.*
+*Проект представляет собой отказоустойчивый конвейер данных, способный работать в изолированных контурах (Local Only) или гибридных облаках с автоматическим управлением ресурсами.*
 
 ---
 
@@ -63,29 +77,20 @@ graph TD
     ```bash
     docker-compose up -d --build
     ```
-    *(Убедитесь, что установлены NVIDIA Container Toolkit и актуальные драйверы)*.
-3.  **Запуск (CPU):**
-    Если у вас нет GPU, удалите секцию `deploy` с `reservations` из `docker-compose.yml` перед запуском.
+3.  **Запуск (CPU Fallback):**
+    Система автоматически переключится на CPU, если GPU не будет обнаружен, но вы можете принудительно отключить reservations в `docker-compose.yml`.
 
 ---
 
-## 💻 Системные требования (Local AI)
-Для стабильной работы "Turbo" режима на локальной машине:
-- **GPU**: NVIDIA RTX 3060 12GB или выше (рекомендуется для загрузки двух моделей одновременно).
-- **RAM/WSL**: Минимум 8 ГБ выделенной памяти для WSL2.
-- **Драйверы**: NVIDIA Driver 560+ и NVIDIA Container Toolkit.
-
----
-
-## 🎙️ Профессиональная диаризация
-В системе реализованы два режима разделения спикеров:
-1.  **AI-Fallback:** Анализ текста и контекста для разделения реплик силами LLM.
-2.  **Cloud Diarization:** Точное распознавание голосов через Yandex SpeechKit (требует настройки S3-бакета).
+## 💻 Системные требования
+- **GPU**: NVIDIA RTX 3060 12GB+ (для Turbo-режима).
+- **RAM**: Минимум 16 ГБ RAM (8 ГБ для WSL2).
+- **OS**: Windows (с NVIDIA Container Toolkit) или Linux.
 
 ---
 
 ## ✨ Основные возможности
-- **Мировые стандарты:** Протоколы оформляются по правилам международного делового оборота.
-- **Умные таблицы:** Поручения автоматически упаковываются в Word/Markdown таблицы.
-- **Интеграция с Email:** Автоматическая рассылка протоколов участникам.
-- **Безопасность**: Полностью приватный режим при использовании локальных моделей.
+- **Мировые стандарты:** Протоколы по ГОСТ и правилам международного делового оборота.
+- **Умные таблицы:** Автоматическая упаковка поручений в DOCX-таблицы.
+- **Интеграция с Email:** Рассылка результатов участникам "в один клик".
+- **Безопасность**: Полная приватность данных в режиме Local.

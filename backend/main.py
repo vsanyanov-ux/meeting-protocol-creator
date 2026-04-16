@@ -1,4 +1,12 @@
 import os
+import sys
+import io
+
+# Force UTF-8 for Windows console (prevents UnicodeEncodeError with emojis/non-ascii)
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, Query, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, FileResponse
@@ -8,11 +16,12 @@ import shutil
 import uuid
 import subprocess
 import time
-import sys
 import asyncio
 import magic
 from contextlib import asynccontextmanager
 from loguru import logger
+from typing import Optional, List, Dict, Any, Callable, Union
+import traceback
 
 # Import our custom modules
 from providers.base import BaseAIProvider
@@ -20,23 +29,21 @@ from protocol_generator import generate_docx
 from email_client import send_email
 from langfuse_client import PipelineTrace, submit_score
 from normalizer import normalize_file
+from exceptions import HardwareError, ProviderQuotaError, ProviderNetworkError
 
 load_dotenv()
 
 # Logging setup
 logger.remove()
-logger.add(sys.stdout, colorize=True, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>")
-logger.add("logs/app.log", rotation="10 MB", retention="10 days", compression="zip", format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}", level="INFO")
+# Use sink=sys.stdout to ensure it uses our UTF-8 wrapper
+logger.add(sys.stdout, colorize=True, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>", enqueue=True)
+logger.add("logs/app.log", rotation="10 MB", retention="10 days", compression="zip", format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}", level="INFO", encoding="utf-8")
 
 # --- Resource Limits ---
 MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", 2))
 processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
 logger.info(f"Initialized with MAX_CONCURRENT_TASKS = {MAX_CONCURRENT_TASKS}")
 
-# Force UTF-8 for Windows console (prevents UnicodeEncodeError with emojis/non-ascii)
-if sys.platform == 'win32':
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 # --- CUDA DLL Setup for Windows ---
 def setup_cuda_dlls():
@@ -81,22 +88,13 @@ setup_cuda_dlls()
 async def lifespan(app: FastAPI):
     # Startup logic
     provider_type = os.getenv("AI_PROVIDER", "yandex").lower()
-    if provider_type == "yandex":
-        required_vars = ["YANDEX_API_KEY", "YANDEX_FOLDER_ID"]
-        missing = [var for var in required_vars if not os.getenv(var)]
-        if missing:
-            raise RuntimeError(f"STARTUP ERROR: Missing required env vars for Yandex: {missing}")
-    
-    logger.info(f"Config OK. Provider: {provider_type}. CORS allowed origins: {ALLOWED_ORIGINS}")
-    # MAX_UPLOAD_SIZE_BYTES is defined below, so we use a hardcoded or global check
-    # But wait, ordering matters. Let's move MAX_UPLOAD_SIZE_BYTES up.
-    
+    logger.info(f"Startup OK. Default provider: {provider_type}. CORS allowed origins: {ALLOWED_ORIGINS}")
     yield
-    logger.info("Shutting down PRO-Толк API")
+    logger.info("Shutting down Протоколист API")
 
 app = FastAPI(
-    title="PRO-Толк API",
-    version="2.1.1",
+    title="Протоколист API",
+    version="4.0.0",
     lifespan=lifespan
 )
 
@@ -116,7 +114,14 @@ async def limit_upload_size(request: Request, call_next):
 # --- Security: CORS — только разрешённые origins ---
 # Добавьте свой домен в ALLOWED_ORIGINS в .env
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")
-ALLOWED_ORIGINS = [o.strip() for o in _raw_origins.split(",") if o.strip()]
+ALLOWED_ORIGINS = [
+    "http://localhost:90",
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:5177",
+    "http://127.0.0.1:5177",
+    "http://127.0.0.1:90"
+] + [o.strip() for o in _raw_origins.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
@@ -125,8 +130,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def get_provider() -> BaseAIProvider:
-    provider_type = os.getenv("AI_PROVIDER", "yandex").lower()
+def get_provider(provider_type: Optional[str] = None, device: Optional[str] = None) -> BaseAIProvider:
+    if not provider_type:
+        provider_type = os.getenv("AI_PROVIDER", "yandex").lower()
+    else:
+        provider_type = provider_type.lower()
     
     if provider_type == "yandex":
         from providers.yandex import YandexProvider
@@ -138,16 +146,19 @@ def get_provider() -> BaseAIProvider:
             s3_bucket=os.getenv("YANDEX_S3_BUCKET"),
             gpt_model=os.getenv("YANDEX_GPT_MODEL", "yandexgpt/latest")
         )
-    elif provider_type == "local":
+    elif provider_type in ["local", "ollama"]:
         from providers.local import LocalProvider
         return LocalProvider(
             whisper_model_size=os.getenv("WHISPER_MODEL", "medium"),
             ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "qwen3.5:4b")
+            ollama_model=os.getenv("OLLAMA_MODEL", "qwen3.5:4b"),
+            device=device
         )
+
     else:
         raise ValueError(f"Unknown AI_PROVIDER: {provider_type}")
 
+# Default provider for global info (backward compatibility)
 ai_provider = get_provider()
 
 UPLOAD_DIR = "uploads"
@@ -179,14 +190,15 @@ async def get_info():
         "online": "Онлайн"
     }
     
-    provider_names = {
-        "yandex": "Яндекс GPT",
-        "local": f"Local AI ({ai_provider.model_name})"
+    provider_mapping = {
+        "yandex": "Яндекс Cloud",
+        "local": "Локальный ИИ (GPU)"
     }
     
     return {
         "location": location_names.get(location_raw, "Неизвестно"),
-        "provider_name": provider_names.get(ai_provider.name, ai_provider.name),
+        "default_provider": ai_provider.name,
+        "provider_name": provider_mapping.get(ai_provider.name, ai_provider.name),
         "is_online": location_raw == "online"
     }
 
@@ -194,7 +206,7 @@ async def get_info():
 
 @app.get("/")
 async def root():
-    return {"message": "PRO-Толк API is running"}
+    return {"message": "Протоколист API is running"}
 
 @app.get("/status/{file_id}")
 async def get_status(file_id: str):
@@ -295,69 +307,91 @@ def cleanup_old_files(max_age_seconds: int = 86400):
 @app.post("/process-meeting")
 async def process_meeting(
     background_tasks: BackgroundTasks, 
-    file: UploadFile = File(...),
-    email: str = Form(None)
+    request: Request,
+    file: UploadFile = File(None), # Optional for retries
+    email: str = Form(None),
+    provider: str = Form(None),
+    existing_file_id: str = Form(None),
+    force_cpu: bool = Form(False)
 ):
     """Main endpoint to upload audio and trigger the protocol creation flow."""
-    # 1. Basic Extension Check (Optional Hint)
-    parts = file.filename.split('.')
-    extension = parts[-1].lower() if len(parts) > 1 else ""
-    file_id = str(uuid.uuid4())
-    extension = file.filename.split(".")[-1].lower() if "." in file.filename else ""
-    safe_ext = f".{extension}" if extension else ""
-    local_path = os.path.join(UPLOAD_DIR, f"{file_id}{safe_ext}")
+    file_id = existing_file_id or str(uuid.uuid4())
+    logger.info(f"Processing request: file_id={file_id}, email={email}, provider={provider}, has_file={file is not None}")
+    local_path = None
+    extension = None
     
-    # 2. Save file locally (Sync file writing is blocking, offload it)
-    def save_file():
-        with open(local_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-    
-    await asyncio.to_thread(save_file)
+    if file:
+        parts = file.filename.split('.')
+        extension = parts[-1].lower() if len(parts) > 1 else ""
+        safe_ext = f".{extension}" if extension else ""
+        local_path = os.path.join(UPLOAD_DIR, f"{file_id}{safe_ext}")
+        
+        # 2. Save file locally (Sync file writing is blocking, offload it)
+        def save_file():
+            with open(local_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+        
+        await asyncio.to_thread(save_file)
+    else:
+        # Check if file exists in UPLOAD_DIR
+        possible_files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id)]
+        if not possible_files:
+            logger.warning(f"File not found for file_id: {file_id}. Request failed.")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Existing file not found for ID {file_id}. If this was a new upload, the file was not received by the server. Please re-upload."
+            )
+        local_path = os.path.join(UPLOAD_DIR, possible_files[0])
+        extension = local_path.split(".")[-1].lower() if "." in local_path else ""
     
     # 2.1 Deep Validation (MIME check) - This is the source of truth
     # magic.from_file is sync/blocking, offload it
-    try:
-        mime_type = await asyncio.to_thread(magic.from_file, local_path, mime=True)
-        logger.info(f"File uploaded: {file.filename}, detected MIME: {mime_type}")
-        
-        # Valid MIME types list (simplified)
-        valid_mimes = [
-            "audio/", "video/", "text/", 
-            "application/pdf", 
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "application/msword",
-            "application/vnd.ms-powerpoint",
-            "application/octet-stream", # common fallback
-            "application/x-zip-compressed", # occasionally for archives
-            "inode/x-empty" # skip empty but don't crash
-        ]
-        
-        # Check if MIME type is valid
-        is_valid = any(mime_type.startswith(m) for m in valid_mimes)
-        
-        # Extension-based rejection (extra safety)
-        forbidden_extensions = ["exe", "dll", "bin", "sh", "bat", "msi"]
-        if extension in forbidden_extensions:
-            if os.path.exists(local_path):
-                os.remove(local_path)
-            logger.warning(f"Rejected forbidden extension: {extension}")
-            raise HTTPException(status_code=400, detail=f"Unsupported file extension: .{extension}")
-        
-        # Special case: some AAC/M4A files might be detected as audio/x-hx-aac-adts or similar
-        if not is_valid and ("audio" in mime_type or "video" in mime_type or "mpeg" in mime_type):
-            is_valid = True
-            logger.info(f"Accepted {mime_type} as it contains 'audio/video/mpeg' keywords")
-
-        if not is_valid:
-            os.remove(local_path)
-            logger.warning(f"Rejected file with invalid MIME type: {mime_type}")
-            raise HTTPException(status_code=400, detail=f"Invalid file content. Detected: {mime_type}")
+    mime_type = "unknown"
+    if file:
+        try:
+            mime_type = await asyncio.to_thread(magic.from_file, local_path, mime=True)
+            logger.info(f"File uploaded: {file.filename}, detected MIME: {mime_type}")
             
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"MIME validation error: {e}")
-        # Continue if magic fails but log it
+            # Valid MIME types list (simplified)
+            valid_mimes = [
+                "audio/", "video/", "text/", 
+                "application/pdf", 
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/msword",
+                "application/vnd.ms-powerpoint",
+                "application/octet-stream", # common fallback
+                "application/x-zip-compressed", # occasionally for archives
+                "inode/x-empty" # skip empty but don't crash
+            ]
+            
+            # Check if MIME type is valid
+            is_valid = any(mime_type.startswith(m) for m in valid_mimes)
+            
+            # Extension-based rejection (extra safety)
+            forbidden_extensions = ["exe", "dll", "bin", "sh", "bat", "msi"]
+            if extension in forbidden_extensions:
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+                logger.warning(f"Rejected forbidden extension: {extension}")
+                raise HTTPException(status_code=400, detail=f"Unsupported file extension: .{extension}")
+            
+            # Special case: some AAC/M4A files might be detected as audio/x-hx-aac-adts or similar
+            if not is_valid and ("audio" in mime_type or "video" in mime_type or "mpeg" in mime_type):
+                is_valid = True
+                logger.info(f"Accepted {mime_type} as it contains 'audio/video/mpeg' keywords")
+    
+            if not is_valid:
+                os.remove(local_path)
+                logger.warning(f"Rejected file with invalid MIME type: {mime_type}")
+                raise HTTPException(status_code=400, detail=f"Invalid file content. Detected: {mime_type}")
+                
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"MIME validation error: {e}")
+            # Continue if magic fails but log it
+    else:
+        mime_type = "reused-file"
     
     # Initialize status with placeholders to avoid missing keys in frontend
     processing_status[file_id] = {
@@ -373,12 +407,13 @@ async def process_meeting(
     metadata = {
         "file_size": file_size,
         "mime_type": mime_type,
-        "extension": extension,
-        "original_filename": file.filename
+        "extension": extension or "unknown",
+        "original_filename": file.filename if file else f"Retried-{file_id}",
+        "force_cpu": force_cpu
     }
 
     # 4. Trigger processing in background
-    background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email)
+    background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu)
     background_tasks.add_task(cleanup_old_files)
     
     return {
@@ -387,18 +422,20 @@ async def process_meeting(
         "message": "Audio is being transcribed and processed."
     }
 
-async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None, recipient_email: str = None):
+async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None, recipient_email: str = None, provider_type: str = None, force_cpu: bool = False):
     """Full pipeline: S3 Upload (optional) -> STT -> GPT -> DOCX -> Email (optional)."""
     import traceback
     
-    logger.info(f"run_full_pipeline STARTED for file_id={file_id}, path={local_path}")
+    logger.info(f"run_full_pipeline STARTED for file_id={file_id}, path={local_path}, force_cpu={force_cpu}, provider={provider_type}")
     
     try:
+        device_override = "cpu" if force_cpu else None
+        current_provider = get_provider(provider_type, device=device_override)
         # --- Langfuse v4: используем контекстный менеджер для автоматического завершения трейса ---
         with PipelineTrace(
             file_id=file_id,
             filename=os.path.basename(local_path),
-            provider=ai_provider.name,
+            provider=current_provider.name,
             metadata=metadata
         ) as trace:
 
@@ -434,12 +471,42 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                         processing_status[file_id].update({"status": status, "message": msg})
                     
                     try:
-                        transcription = await ai_provider.transcribe_audio(
+                        transcription = await current_provider.transcribe_audio(
                             audio_path=norm_res["path"], 
                             file_id=file_id, 
                             status_updater=status_updater, 
                             trace=trace
                         )
+                    except HardwareError as he:
+                        logger.warning(f"GPU FAILURE: {he}. Attempting automatic fallback to CPU...")
+                        status_updater("transcribing", "GPU (CUDA) is unavailable or crashed. Automatically falling back to CPU mode...")
+                        
+                        # Re-initialize local provider forced to CPU
+                        current_provider = get_provider("local", device="cpu")
+                        
+                        try:
+                            transcription = await current_provider.transcribe_audio(
+                                audio_path=norm_res["path"], 
+                                file_id=file_id, 
+                                status_updater=status_updater, 
+                                trace=trace
+                            )
+                        except Exception as cpu_error:
+                            logger.error(f"CPU Fallback also failed: {cpu_error}")
+                            # Final fallback: Try Yandex Cloud if configured
+                            if os.getenv("YANDEX_API_KEY"):
+                                logger.info("Local CPU failed. Attempting final fallback: Cloud (Yandex)...")
+                                status_updater("transcribing", "Local resources exhausted. Switching to Cloud processing...")
+                                current_provider = get_provider("yandex")
+                                transcription = await current_provider.transcribe_audio(
+                                    audio_path=norm_res["path"], 
+                                    file_id=file_id, 
+                                    status_updater=status_updater, 
+                                    trace=trace
+                                )
+                            else:
+                                raise cpu_error
+
                     except Exception as e:
                         err_msg = f"Transcription crash: {str(e)}"
                         logger.error(err_msg)
@@ -459,14 +526,14 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                 
                 try:
                     trace.start_span("Create Protocol")
-                    gpt_result = await ai_provider.create_protocol(transcription)
+                    gpt_result = await current_provider.create_protocol(transcription)
                     protocol_text = gpt_result["text"]
 
                     # --- Langfuse: логируем LLM-вызов как Generation ---
                     trace.log_generation(
                         input_messages=gpt_result["messages"],
                         output_text=protocol_text or "",
-                        model=ai_provider.model_name,
+                        model=current_provider.model_name,
                         latency_ms=gpt_result["latency_ms"],
                         input_tokens=gpt_result["input_tokens"],
                         output_tokens=gpt_result["output_tokens"],
@@ -488,18 +555,20 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                 processing_status[file_id].update({"status": "verifying", "message": "AI-Auditor is verifying protocol accuracy..."})
                 
                 try:
-                    verify_res = await ai_provider.verify_protocol(transcription, protocol_text)
+                    verify_res = await current_provider.verify_protocol(transcription, protocol_text)
                     processing_status[file_id]["verification_report"] = verify_res["verification_report"]
                     
                     # Log verification to Langfuse as a separate generation
                     trace.log_generation(
-                        input_messages=[{"role": "user", "text": "Verify protocol"}],
+                        input_messages=[{"role": "user", "content": "Verify protocol"}],
                         output_text=verify_res["verification_report"],
-                        model=f"{ai_provider.model_name}_auditor",
+                        model=f"{current_provider.model_name}_auditor",
                         latency_ms=verify_res.get("latency_ms", 0),
                         input_tokens=verify_res["input_tokens"],
                         output_tokens=verify_res["output_tokens"]
                     )
+                    # Add Auditor's report to the protocol text so it appears in the DOCX
+                    protocol_text += f"\n\n## ОТЧЕТ AI-АУДИТОРА\n{verify_res['verification_report']}"
                     
                     # --- Langfuse: отправляем автоматические оценки от Аудитора ---
                     if "scores" in verify_res and verify_res["scores"]:
@@ -538,7 +607,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                             send_email,
                             recipient_email=recipient,
                             subject=f"Готов протокол совещания: {orig_filename}",
-                            body=f"Здравствуйте!\n\nПротокол совещания для файла '{orig_filename}' успешно сформирован и прикрепелен к этому письму.\n\nС уважением,\nPRO-Толк",
+                            body=f"Здравствуйте!\n\nПротокол совещания для файла '{orig_filename}' успешно сформирован и прикрепелен к этому письму.\n\nС уважением,\nПротоколист",
                             attachment_path=docx_path
                         )
                         trace.end_span("email_send", {"success": success, "recipient": recipient})

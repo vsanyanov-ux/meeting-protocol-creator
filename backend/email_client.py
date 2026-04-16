@@ -11,7 +11,7 @@ def send_email(recipient_email: str, subject: str, body: str, attachment_path: s
     smtp_port = int(os.getenv("SMTP_PORT", 587))
     smtp_user = os.getenv("SMTP_USER")
     smtp_password = os.getenv("SMTP_PASSWORD")
-    display_name = os.getenv("SMTP_DISPLAY_NAME", "PRO-Толк")
+    display_name = os.getenv("SMTP_DISPLAY_NAME", "Протоколист")
 
     msg = EmailMessage()
     msg['Subject'] = f"Документ: {subject.split(':')[-1].strip()}"
@@ -47,7 +47,7 @@ def send_email(recipient_email: str, subject: str, body: str, attachment_path: s
                     {body_html_formatted}
                 </div>
                 <p style="font-size: 0.9em; color: #7f8c8d;">
-                    Это автоматическое уведомление от сервиса <b>PRO-Толк</b>.<br>
+                    Это автоматическое уведомление от сервиса <b>Протоколист</b>.<br>
                     Пожалуйста, не отвечайте на это письмо.
                 </p>
             </div>

@@ -13,8 +13,12 @@ os.environ["AI_PROVIDER"] = "yandex"
 from main import app
 
 @pytest.fixture(autouse=True)
-def mock_external_services():
-    """Globally mock expensive or external services."""
+def mock_external_services(request):
+    """Globally mock expensive or external services. Use @pytest.mark.no_mock to skip."""
+    if "no_mock" in request.keywords:
+        yield None
+        return
+    
     with patch("main.ai_provider") as mock_provider, \
          patch("main.send_email") as mock_email, \
          patch("main.PipelineTrace") as mock_trace, \

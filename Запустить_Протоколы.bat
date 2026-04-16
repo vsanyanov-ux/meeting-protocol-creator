@@ -1,47 +1,44 @@
 @echo off
 setlocal
+chcp 65001 >nul
 
-echo [!] Checking environment...
+echo ==========================================
+echo [!] Запуск системы "Протоколист" (Windows Native)
+echo ==========================================
 
-:: Detect docker command (modern 'docker compose' vs old 'docker-compose')
-docker compose version >nul 2>&1
-if %errorlevel% equ 0 (
-    set D_CMD=docker compose
-) else (
-    set D_CMD=docker-compose
+:: 1. Очистка портов
+echo [1/3] Проверка портов...
+taskkill /F /IM python* /T 2>nul
+taskkill /F /IM node* /T 2>nul
+
+:: 2. Проверка зависимостей (быстрая)
+if not exist "backend\venv" (
+    if not exist "backend\requirements.txt" (
+        echo [ERROR] Папка backend не найдена!
+        pause
+        exit /b
+    )
 )
 
-echo [+] Using: %D_CMD%
+:: 3. Запуск сервисов
+echo [2/3] Запуск Бэкенда...
+start "Backend" cmd /k "cd backend && python main.py"
 
-echo [+] Cleaning up old containers...
-%D_CMD% down >nul 2>&1
+echo [3/3] Запуск Фронтенда...
+start "Frontend" cmd /k "cd frontend && npm run dev"
 
-:: Check for NVIDIA GPU
-nvidia-smi >nul 2>&1
-if %errorlevel% equ 0 (
-    echo [+] NVIDIA GPU found. Starting with GPU support...
-    %D_CMD% -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
-) else (
-    echo [!] No NVIDIA GPU found, using CPU.
-    %D_CMD% up -d --build
-)
-
-if %errorlevel% neq 0 (
-    echo [ERROR] Failed to start containers!
-    pause
-    exit /b
-)
+timeout /t 5 >nul
 
 echo.
 echo ==========================================
-echo [+] SYSTEM STARTED SUCCESSFULLY!
+echo [+] СИСТЕМА УСПЕШНО ЗАПУЩЕНА!
 echo.
-echo [!] Frontend: http://localhost:90
-echo [!] Backend:  http://localhost:8000
+echo [!] Фронтенд (Интерфейс): http://localhost:5177
+echo [!] Бэкенд (API):         http://localhost:8000
 echo.
-echo [!] NOTE: First protocol generation will 
-echo     download the model (2GB). 
-echo     Please wait 2-5 minutes.
+echo [!] ПРИМЕЧАНИЕ: Если это первый запуск,
+echo     модели ИИ могут загружаться 2-5 минут.
 echo ==========================================
 echo.
+start http://localhost:5177
 pause

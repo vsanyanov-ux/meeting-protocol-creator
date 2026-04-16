@@ -19,7 +19,13 @@ import {
   Monitor
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import protocolLogo from './assets/protocolist-logo.png';
 import { uploadMeeting, getProcessingStatus, getSystemInfo, API_BASE_URL } from './api';
+
+const PROVIDER_NAMES = {
+  yandex: 'Yandex GPT',
+  local: 'Qwen 3.5 (локально)'
+};
 
 const App = () => {
   const [file, setFile] = useState(null);
@@ -28,7 +34,8 @@ const App = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [recipientEmail, setRecipientEmail] = useState('v.s.anyanov@gmail.com');
-  const [systemInfo, setSystemInfo] = useState({ location: 'Загрузка...', provider_name: 'Загрузка...', is_online: false });
+  const [systemInfo, setSystemInfo] = useState({ location: 'Загрузка...', default_provider: 'yandex', provider_name: 'Яндекс Cloud', is_online: false });
+  const [selectedProvider, setSelectedProvider] = useState('local');
   const [isBackendOnline, setIsBackendOnline] = useState(false);
   const fileInputRef = useRef(null);
 
@@ -38,6 +45,9 @@ const App = () => {
       try {
         const info = await getSystemInfo();
         setSystemInfo(info);
+        if (!selectedProvider) {
+          setSelectedProvider(info.default_provider);
+        }
         setIsBackendOnline(true);
       } catch (err) {
         console.error("Failed to fetch system info:", err);
@@ -45,7 +55,7 @@ const App = () => {
       }
     };
     fetchInfo();
-    const interval = setInterval(fetchInfo, 5000);
+    const interval = setInterval(fetchInfo, 2000); // Poll every 2s for better UX
     return () => clearInterval(interval);
   }, []);
 
@@ -78,17 +88,25 @@ const App = () => {
     }
   };
 
-  const handleUpload = async () => {
-    if (!file) return;
+  const handleUpload = async (isFallback = false, fallbackProvider = null, forceCpu = false) => {
+    if (!file && !isFallback) return;
     setLoading(true);
     setError(null);
-    setStatus(null);
+    if (!isFallback) setStatus(null);
     
     try {
-      const result = await uploadMeeting(file, recipientEmail);
-      setFileId(result.file_id);
+      const targetProvider = fallbackProvider || selectedProvider;
+      const result = await uploadMeeting(
+        isFallback ? null : file, 
+        recipientEmail, 
+        targetProvider, 
+        isFallback ? fileId : null, 
+        forceCpu
+      );
+      if (!isFallback) setFileId(result.file_id);
+      setStatus({ status: 'starting', message: 'Перезапуск с новыми параметрами...' });
     } catch (err) {
-      setError(err.response?.data?.detail || "Ошибка при загрузке файла. Убедитесь, что бэкенд запущен.");
+      setError(err.response?.data?.detail || "Ошибка при обработке запроса.");
       setLoading(false);
     }
   };
@@ -128,6 +146,8 @@ const App = () => {
     return idx === -1 ? 0 : idx;
   };
 
+  const isActiveStep = (stepName) => status?.status === stepName;
+
   return (
     <>
       <div className="bg-mesh"></div>
@@ -143,27 +163,41 @@ const App = () => {
               initial={{ scale: 0.8 }}
               animate={{ scale: 1 }}
               transition={{ type: "spring", stiffness: 200 }}
-              style={{ background: 'var(--primary)', width: 64, height: 64, borderRadius: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', margin: '0 auto 1.5rem' }}
+              style={{ width: 84, height: 84, margin: '0 auto 1.5rem', position: 'relative' }}
             >
-              <FileAudio color="white" size={32} />
+              <img 
+                src={protocolLogo} 
+                alt="Logo" 
+                style={{ 
+                  width: '100%', 
+                  height: '100%', 
+                  borderRadius: 22, 
+                  boxShadow: '0 12px 24px -6px rgba(0,0,0,0.4)',
+                  display: 'block'
+                }} 
+              />
             </motion.div>
-            <h1>PRO-Толк</h1>
-            <p className="subtitle">Профессиональное создание протоколов совещаний из видео и аудиозаписей.</p>
+            <h1>Протоколист</h1>
+            <p className="subtitle">Профессиональное создание протоколов совещаний.</p>
             
             <div style={{ display: 'flex', justifyContent: 'center', gap: '1rem', marginTop: '1.5rem', flexWrap: 'wrap' }}>
-              <div className="system-badge">
-                <Server size={14} /> <span>Бэкенд: <span style={{ color: isBackendOnline ? (systemInfo.is_online ? '#60a5fa' : 'var(--secondary)') : 'var(--error)' }}>
-                  {isBackendOnline ? systemInfo.location : '---'}
-                </span></span>
+              <div className="system-badge" style={{ borderColor: isBackendOnline ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)' }}>
+                <Server size={14} style={{ color: isBackendOnline ? '#22c55e' : '#ef4444' }} /> 
+                <span style={{ fontSize: '0.85rem' }}>Система: </span>
+                <span className={isBackendOnline ? "status-pulse" : ""} style={{ 
+                  color: isBackendOnline ? '#22c55e' : '#ef4444', 
+                  fontWeight: 'bold',
+                  fontSize: '0.85rem'
+                }}>
+                  {isBackendOnline ? 'ONLINE' : 'OFFLINE'}
+                </span>
               </div>
               <div className="system-badge">
-                <div style={{ width: 8, height: 8, borderRadius: '50%', background: isBackendOnline ? 'var(--secondary)' : 'var(--error)', boxShadow: isBackendOnline ? '0 0 8px var(--secondary)' : 'none' }}></div>
-                <span>Статус: <span style={{ color: isBackendOnline ? 'var(--secondary)' : 'var(--error)', fontWeight: 'bold' }}>
-                  {isBackendOnline ? 'On' : 'Off'}
-                </span></span>
-              </div>
-              <div className="system-badge">
-                <Cpu size={14} /> <span>ИИ: <span style={{ color: 'var(--primary)' }}>{isBackendOnline ? systemInfo.provider_name : 'Нет связи'}</span></span>
+                <Cpu size={14} style={{ color: 'var(--primary)' }} /> 
+                <span style={{ fontSize: '0.85rem' }}>LLM: </span>
+                <span style={{ color: 'var(--primary)', fontWeight: 'bold', fontSize: '0.85rem' }}>
+                  {PROVIDER_NAMES[selectedProvider || systemInfo.default_provider] || '---'}
+                </span>
               </div>
             </div>
           </header>
@@ -216,6 +250,26 @@ const App = () => {
                 <div style={{ marginTop: '2.5rem' }}>
                   <div className="input-field-group" style={{ marginBottom: '1.5rem' }}>
                     <label style={{ display: 'block', marginBottom: '0.75rem', fontSize: '0.9rem', fontWeight: 500, color: 'var(--text-muted)' }}>
+                      Выберите LLM:
+                    </label>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                      <ProviderOption 
+                        id="yandex" 
+                        name="Yandex GPT" 
+                        selected={selectedProvider === 'yandex'} 
+                        onClick={() => setSelectedProvider('yandex')} 
+                      />
+                      <ProviderOption 
+                        id="local" 
+                        name="Qwen 3.5 (локально)" 
+                        selected={selectedProvider === 'local'} 
+                        onClick={() => setSelectedProvider('local')} 
+                      />
+                    </div>
+                  </div>
+
+                  <div className="input-field-group" style={{ marginBottom: '1.5rem' }}>
+                    <label style={{ display: 'block', marginBottom: '0.75rem', fontSize: '0.9rem', fontWeight: 500, color: 'var(--text-muted)' }}>
                       Отправить готовый протокол на email:
                     </label>
                     <div style={{ position: 'relative' }}>
@@ -234,7 +288,7 @@ const App = () => {
                   <button 
                     className="btn btn-primary" 
                     disabled={!file || loading || !isBackendOnline}
-                    onClick={handleUpload}
+                    onClick={() => handleUpload()}
                   >
                     {loading ? <Loader2 className="animate-pulse" /> : "Создать протокол"}
                   </button>
@@ -272,16 +326,16 @@ const App = () => {
                   />
                   <StatusStep 
                     title="Транскрипция" 
-                    desc={`Распознавание речи: ${systemInfo.provider_name.includes('Яндекс') ? 'SpeechKit' : 'Whisper'}`} 
+                    desc={isActiveStep('transcribing') && status?.message ? status.message : `Распознавание речи: ${selectedProvider === 'yandex' ? 'SpeechKit' : 'Whisper'}`} 
                     icon={<Mic size={18} />}
-                    isActive={status?.status === 'transcribing'}
+                    isActive={isActiveStep('transcribing')}
                     isComplete={currentStepIndex() > 2}
                   />
                   <StatusStep 
                     title="Анализ и Саммери" 
-                    desc={`Генерация протокола: ${systemInfo.provider_name}`} 
+                    desc={isActiveStep('generating') && status?.message ? status.message : `Генерация протокола через ${selectedProvider?.toUpperCase() || 'AI'}`} 
                     icon={<FileText size={18} />}
-                    isActive={status?.status === 'generating'}
+                    isActive={isActiveStep('generating')}
                     isComplete={currentStepIndex() > 3}
                   />
                   <StatusStep 
@@ -345,6 +399,37 @@ const App = () => {
                         content={status.transcription}
                         type="transcription"
                       />
+                    </div>
+                  </motion.div>
+                )}
+
+                {status?.status === 'awaiting_fallback' && (
+                  <motion.div 
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    style={{ marginTop: '2rem', padding: '2rem', background: 'rgba(251, 191, 36, 0.1)', border: '1px solid #fbbf24', borderRadius: 16, textAlign: 'center' }}
+                  >
+                    <Cpu size={48} color="#fbbf24" style={{ margin: '0 auto 1rem' }} />
+                    <h3 style={{ color: '#fbbf24', marginBottom: '0.5rem' }}>Проблема с видеокартой (GPU)</h3>
+                    <p style={{ fontSize: '0.95rem', color: 'var(--text-muted)', marginBottom: '1.5rem' }}>
+                      Локальная обработка на GPU временно недоступна. Как вы хотите продолжить?
+                    </p>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                      <button 
+                        className="btn" 
+                        style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', color: 'white' }}
+                        onClick={() => handleUpload(true, 'local', true)}
+                      >
+                        🐢 На процессоре (CPU)<br/>
+                        <span style={{ fontSize: '0.7rem', opacity: 0.6 }}>Это будет ОЧЕНЬ медленно</span>
+                      </button>
+                      <button 
+                        className="btn btn-primary"
+                        onClick={() => handleUpload(true, 'yandex', false)}
+                      >
+                        ☁️ Через Облако (Яндекс)<br/>
+                        <span style={{ fontSize: '0.7rem', opacity: 0.8 }}>Быстро, но расходует лимиты</span>
+                      </button>
                     </div>
                   </motion.div>
                 )}
@@ -421,5 +506,31 @@ const Accordion = ({ title, icon, content, type }) => {
     </div>
   );
 };
+
+const ProviderOption = ({ id, name, selected, onClick }) => (
+  <button 
+    onClick={onClick}
+    style={{ 
+      padding: '0.75rem', 
+      borderRadius: 12, 
+      border: '1px solid', 
+      borderColor: selected ? 'var(--primary)' : 'rgba(255,255,255,0.1)', 
+      background: selected ? 'rgba(59, 130, 246, 0.1)' : 'rgba(255,255,255,0.02)', 
+      color: selected ? 'white' : 'var(--text-muted)',
+      cursor: 'pointer',
+      fontSize: '0.8rem',
+      fontWeight: selected ? 600 : 400,
+      transition: 'all 0.2s ease',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: '0.5rem'
+    }}
+  >
+    {id === 'yandex' && <Wifi size={16} />}
+    {id === 'local' && <Cpu size={16} />}
+    {name}
+  </button>
+);
 
 export default App;

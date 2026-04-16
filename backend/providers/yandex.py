@@ -10,6 +10,7 @@ from typing import Optional, List, Dict, Any, Callable
 from loguru import logger
 
 from .base import BaseAIProvider
+from exceptions import ProviderQuotaError, ProviderNetworkError
 
 class YandexProvider(BaseAIProvider):
     def __init__(self, api_key: str, folder_id: str, 
@@ -64,7 +65,7 @@ class YandexProvider(BaseAIProvider):
             trace.log_stt(duration_sec)
 
         # S3 upload disabled, falling back to chunking
-        status_updater("transcribing", f"Processing {int(duration_sec)}s audio via chunking (No S3)...")
+        status_updater("transcribing", f"Processing {int(duration_sec)}s audio via Yandex SpeechKit...")
         chunk_prefix = os.path.join(os.path.dirname(audio_path), f"chunks_{file_id}")
         if not os.path.exists(chunk_prefix):
             os.makedirs(chunk_prefix)
@@ -124,18 +125,33 @@ class YandexProvider(BaseAIProvider):
     async def _transcribe_short(self, file_content: bytes, lang: str = "ru-RU") -> Optional[str]:
         headers = {"Authorization": f"Api-Key {self.api_key}"}
         params = {"folderId": self.folder_id, "lang": lang}
-        try:
-            response = await asyncio.to_thread(
-                requests.post, self.stt_url, headers=headers, params=params, data=file_content, timeout=30
-            )
-            if response.status_code == 200:
-                return response.json().get("result")
-            else:
-                logger.error(f"STT Error: {response.status_code} - {response.text}")
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = await asyncio.to_thread(
+                    requests.post, self.stt_url, headers=headers, params=params, data=file_content, timeout=30
+                )
+                if response.status_code == 200:
+                    return response.json().get("result")
+                elif response.status_code in [429, 500, 502, 503, 504]:
+                    logger.warning(f"STT retryable error {response.status_code} (attempt {attempt+1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                elif response.status_code in [402, 403]:
+                    logger.error(f"STT Quota/Auth Error: {response.status_code} - {response.text}")
+                    raise ProviderQuotaError(f"Yandex STT Quota Exceeded: {response.text}", provider_name="yandex")
+                
+                logger.error(f"STT Fatal Error: {response.status_code} - {response.text}")
                 return None
-        except requests.exceptions.RequestException as e:
-            logger.error(f"STT Network Error: {e}")
-            return None
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"STT Network issue (attempt {attempt+1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                raise ProviderNetworkError(f"Yandex STT Network failed after {max_retries} attempts: {e}")
+        return None
 
     async def _transcribe_long(self, file_url: str, lang: str = "ru-RU") -> Optional[str]:
         headers = {"Authorization": f"Api-Key {self.api_key}"}
@@ -199,9 +215,14 @@ class YandexProvider(BaseAIProvider):
     async def create_protocol(self, transcription: str) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
         system_text = (
-            "Ты — ведущий эксперт по корпоративному управлению... \n"
+            "Ты — ведущий эксперт по техническому документообороту и корпоративному управлению. Твоя задача — составить официальный протокол совещания на основе расшифровки.\n\n"
+            "ПРАВИЛА:\n"
+            "1. ОБЯЗАТЕЛЬНО сохраняй технические коды, маркировки, артикулы (например, марки стали 08Х18Н10Т, ГОСТы, ТУ).\n"
+            "2. Будь предельно точен в цифрах, допусках и технических параметрах.\n"
+            "3. Используй деловой, инженерно-технический стиль.\n\n"
             "СТРУКТУРА:\n## Общая информация\n## Участники\n## Повестка дня\n## Ход обсуждения\n"
             "## Принятые решения и Поручения\n| № | Поручение | Ответственный | Срок исполнения |\n"
+            "|---|-----------|---------------|------------------|\n"
             "## Нерешенные вопросы"
         )
         messages = [
@@ -216,20 +237,37 @@ class YandexProvider(BaseAIProvider):
         result = {"text": None, "latency_ms": 0, "input_tokens": None, "output_tokens": None, "messages": messages}
         t_start = time.time()
         
-        try:
-            response = await asyncio.to_thread(requests.post, self.gpt_url, headers=headers, json=prompt, timeout=120)
-            result["latency_ms"] = int((time.time() - t_start) * 1000)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = await asyncio.to_thread(requests.post, self.gpt_url, headers=headers, json=prompt, timeout=120)
+                result["latency_ms"] = int((time.time() - t_start) * 1000)
 
-            if response.status_code == 200:
-                data = response.json()
-                result["text"] = data["result"]["alternatives"][0]["message"]["text"]
-                usage = data["result"].get("usage", {})
-                result["input_tokens"] = usage.get("inputTextTokens")
-                result["output_tokens"] = usage.get("completionTokens")
-            else:
-                logger.error(f"GPT Error: {response.status_code} - {response.text}")
-        except Exception as e:
-            logger.error(f"GPT Error: {e}")
+                if response.status_code == 200:
+                    data = response.json()
+                    result["text"] = data["result"]["alternatives"][0]["message"]["text"]
+                    usage = data["result"].get("usage", {})
+                    result["input_tokens"] = usage.get("inputTextTokens")
+                    result["output_tokens"] = usage.get("completionTokens")
+                    return result
+                elif response.status_code in [429, 500, 502, 503, 504]:
+                    logger.warning(f"GPT retryable error {response.status_code} (attempt {attempt+1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                elif response.status_code in [402, 403]:
+                    logger.error(f"GPT Quota/Auth Error: {response.status_code} - {response.text}")
+                    raise ProviderQuotaError(f"Yandex GPT Quota Exceeded: {response.text}", provider_name="yandex")
+                
+                logger.error(f"GPT Fatal Error: {response.status_code} - {response.text}")
+                break
+            except Exception as e:
+                logger.warning(f"GPT Attempt {attempt+1} failed: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                logger.error(f"GPT Error: {e}")
+                break
             
         return result
 

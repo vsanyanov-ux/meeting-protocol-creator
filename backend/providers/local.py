@@ -14,12 +14,14 @@ from faster_whisper import WhisperModel
 import ollama
 
 from .base import BaseAIProvider
+from exceptions import HardwareError
 
 class LocalProvider(BaseAIProvider):
     def __init__(self, 
                  whisper_model_size: str = "medium", 
                  ollama_url: str = "http://localhost:11434",
-                 ollama_model: str = "qwen2.5:3b"):
+                 ollama_model: str = "qwen2.5:3b",
+                 device: Optional[str] = None):
         self.whisper_model_size = whisper_model_size
         self.ollama_url = ollama_url
         self.ollama_model = ollama_model
@@ -27,13 +29,17 @@ class LocalProvider(BaseAIProvider):
         self._model_verified = False
         
         # Determine device for Whisper (cuda/cpu)
-        env_device = os.getenv("WHISPER_DEVICE")
-        if env_device:
-            self.device = env_device
+        if device:
+            self.device = device
         else:
-            self.device = "cuda" if self._has_gpu() else "cpu"
+            env_device = os.getenv("WHISPER_DEVICE")
+            if env_device:
+                self.device = env_device
+            else:
+                self.device = "cuda" if self._has_gpu() else "cpu"
             
         # use int8_float16 for stability and speed on RTX cards
+        # BUT if we are on CPU, we MUST use int8 or float32
         self.compute_type = "int8_float16" if self.device == "cuda" else "int8"
         
         logger.info(f"Initialized LocalProvider with Whisper ({whisper_model_size}, {self.device}, {self.compute_type}) and Ollama ({ollama_model})")
@@ -142,7 +148,7 @@ class LocalProvider(BaseAIProvider):
         try:
             model = await self._get_whisper()
             
-            status_updater("transcribing", "Transcribing audio locally...")
+            status_updater("transcribing", f"Processing via Local Whisper ({self.whisper_model_size})...")
             logger.info(f"--- TRANSCRIPTION START: {audio_path} ---")
             t_start = time.time()
             
@@ -182,8 +188,13 @@ class LocalProvider(BaseAIProvider):
         except Exception as e:
             logger.error(f"Local transcription error: {e}")
             trace.log_error("transcription", str(e))
-            # Keep the model but try to clean cache if error occurs
-            # await self._cleanup_memory()
+            
+            # Check if this is a CUDA-related error when device is cuda
+            error_str = str(e).lower()
+            if self.device == "cuda" and ("cuda" in error_str or "nvidia" in error_str or "out of memory" in error_str):
+                logger.critical(f"GPU failure detected: {e}")
+                raise HardwareError(f"Graphics card error: {str(e)}", device="cuda")
+            
             return None
 
     async def _ensure_model_exists(self, client: ollama.Client):
@@ -244,14 +255,18 @@ class LocalProvider(BaseAIProvider):
                     logger.warning(f"Ollama Exception: {e} (Attempt {attempt+1}/{max_retries}). Retrying in 5s...")
                     await asyncio.sleep(5)
                     continue
-                logger.error(f"Ollama Error: {e} (status code: {getattr(response, 'status_code', 'N/A')})")
+                logger.error(f"Ollama Error: {e}")
                 raise
         
         return result
 
     async def create_protocol(self, transcription: str) -> Dict[str, Any]:
         system_text = (
-            "Ты — ведущий эксперт по корпоративному управлению. Твоя задача — составить официальный протокол совещания на основе предоставленной расшифровки.\n\n"
+            "Ты — ведущий эксперт по техническому документообороту и промышленному инжинирингу. Твоя задача — составить официальный протокол совещания на основе расшифровки.\n\n"
+            "ПРАВИЛА:\n"
+            "1. ОБЯЗАТЕЛЬНО сохраняй технические маркировки, артикулы, названия сплавов, коды изделий (например: марки стали 08Х18Н10Т, ГОСТы, чертежи).\n"
+            "2. Будь точен в числовых параметрах и единицах измерения.\n"
+            "3. Используй строгий технический стиль.\n\n"
             "СТРУКТУРА:\n## Общая информация\n## Участники\n## Повестка дня\n## Ход обсуждения\n"
             "## Принятые решения и Поручения\n"
             "| № | Поручение | Ответственный | Срок исполнения |\n"
