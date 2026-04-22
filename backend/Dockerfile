@@ -22,15 +22,28 @@ ENV LD_LIBRARY_PATH=/usr/local/lib/python3.11/site-packages/nvidia/cublas/lib:/u
 # Create a non-root user and group with a home directory
 RUN groupadd -r appgroup && useradd -m -r -g appgroup appuser
 
-# Copy the requirements file into the container
+# Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install any needed packages
-# Install packages in chunks to avoid Out of Memory during build
+# Install dependencies
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir fastapi uvicorn pydantic python-dotenv loguru httpx && \
     pip install --no-cache-dir faster-whisper==1.2.1 ollama==0.6.1 && \
     pip install --no-cache-dir -r requirements.txt
+
+# --- PRE-DOWNLOAD MODELS FOR OFFLINE USE ---
+# This happens during build time. Requires internet.
+ARG HF_TOKEN
+ENV HF_TOKEN=${HF_TOKEN}
+ENV WHISPER_MODEL=medium
+
+# Copy only the scripts needed for download to avoid rebuilding cache on every code change
+COPY scripts/pre_download_models.py scripts/
+RUN if [ -n "$HF_TOKEN" ]; then \
+        python scripts/pre_download_models.py; \
+    else \
+        echo "Building without HF_TOKEN. Models will be downloaded at runtime if needed."; \
+    fi
 
 # Copy the rest of the application code
 COPY . .

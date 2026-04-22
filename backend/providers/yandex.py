@@ -307,7 +307,7 @@ class YandexProvider(BaseAIProvider):
         ]
         prompt = {
             "modelUri": f"gpt://{self.folder_id}/{self.gpt_model}",
-            "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": "1000"},
+            "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": "3000"},
             "messages": messages
         }
         

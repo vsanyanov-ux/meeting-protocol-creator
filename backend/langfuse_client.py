@@ -107,11 +107,16 @@ class PipelineTrace:
         if exc_type:
             self.log_error("exception", str(exc_val))
         
-        # Завершаем трейс автоматически, если он еще не был завершен вручную
-        self.finish(status="error" if exc_type else "completed")
+        # Automatically finish if not done manually
+        if not hasattr(self, "_finished") or not self._finished:
+            self.finish(status="error" if exc_type else "completed")
         
+        # Explicit final flush on exit to ensure data delivery
         if self.lf:
-            self.lf.flush()
+            try:
+                self.lf.flush()
+            except Exception as e:
+                logger.debug(f"Final Langfuse flush error (ignored): {e}")
 
     def _get_context(self):
         """Возвращает контекст для привязки к родителю."""

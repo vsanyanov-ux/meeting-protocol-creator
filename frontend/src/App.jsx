@@ -20,12 +20,14 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import protocolLogo from './assets/protocolist-logo.png';
-import { uploadMeeting, getProcessingStatus, getSystemInfo, API_BASE_URL } from './api';
+import { uploadMeeting, getProcessingStatus, getSystemInfo, getResults, API_BASE_URL } from './api';
 
 const PROVIDER_NAMES = {
   yandex: 'Yandex GPT',
-  local: 'Qwen 3.5 (локально)'
+  local: 'Qwen 2.5 7B (локально)'
 };
+
+const PROCESSING_STEPS = ['starting', 'uploading', 'transcribing', 'generating', 'verifying', 'generating_docx', 'emailing', 'completed'];
 
 const App = () => {
   const [file, setFile] = useState(null);
@@ -66,10 +68,23 @@ const App = () => {
       interval = setInterval(async () => {
         try {
           const data = await getProcessingStatus(fileId);
-          setStatus(data);
-          if (data.status === 'completed' || data.status === 'error') {
+          if (data.status === 'completed') {
             clearInterval(interval);
             setLoading(false);
+            // Fetch heavy results separately for stability
+            try {
+              const fullResults = await getResults(fileId);
+              setStatus(prev => ({ ...prev, ...data, ...fullResults }));
+            } catch (resErr) {
+              console.error("Failed to fetch full results:", resErr);
+              setStatus(data); // Fallback to basic status
+            }
+          } else if (data.status === 'error') {
+            clearInterval(interval);
+            setLoading(false);
+            setStatus(data);
+          } else {
+            setStatus(data);
           }
         } catch (err) {
           console.error("Polling error:", err);
@@ -141,8 +156,7 @@ const App = () => {
 
   const currentStepIndex = () => {
     if (!status) return 0;
-    const steps = ['starting', 'uploading', 'transcribing', 'generating', 'verifying', 'emailing', 'completed'];
-    const idx = steps.indexOf(status.status);
+    const idx = PROCESSING_STEPS.indexOf(status.status);
     return idx === -1 ? 0 : idx;
   };
 
@@ -189,7 +203,7 @@ const App = () => {
                   fontWeight: 'bold',
                   fontSize: '0.85rem'
                 }}>
-                  {isBackendOnline ? 'ONLINE' : 'OFFLINE'}
+                  {isBackendOnline ? 'АКТИВНА' : 'НЕДОСТУПНА'}
                 </span>
               </div>
               <div className="system-badge">
@@ -261,7 +275,7 @@ const App = () => {
                       />
                       <ProviderOption 
                         id="local" 
-                        name="Qwen 3.5 (локально)" 
+                        name="Qwen 2.5 7B (локально)" 
                         selected={selectedProvider === 'local'} 
                         onClick={() => setSelectedProvider('local')} 
                       />
@@ -311,7 +325,7 @@ const App = () => {
                     <motion.div 
                       className="progress-fill"
                       initial={{ width: '0%' }}
-                      animate={{ width: `${(currentStepIndex() + 1) * 16.66}%` }}
+                      animate={{ width: `${((currentStepIndex() + 1) / PROCESSING_STEPS.length) * 100}%` }}
                     />
                   </div>
                 </div>
@@ -349,7 +363,7 @@ const App = () => {
                     title="Отправка" 
                     desc="Формируем DOCX и отправляем на email" 
                     icon={<Mail size={18} />}
-                    isActive={status?.status === 'emailing'}
+                    isActive={status?.status === 'emailing' || status?.status === 'generating_docx'}
                     isComplete={currentStepIndex() > 5}
                   />
                 </div>

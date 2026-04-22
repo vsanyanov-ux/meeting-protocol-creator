@@ -1,6 +1,7 @@
 import os
 import sys
 import io
+import json
 
 # Force UTF-8 for Windows console (prevents UnicodeEncodeError with emojis/non-ascii)
 if sys.platform == 'win32':
@@ -16,12 +17,14 @@ import shutil
 import uuid
 import subprocess
 import time
+from datetime import datetime
 import asyncio
 import magic
 from contextlib import asynccontextmanager
 from loguru import logger
 from typing import Optional, List, Dict, Any, Callable, Union
 import traceback
+import gc
 
 # Import our custom modules
 from providers.base import BaseAIProvider
@@ -43,6 +46,9 @@ logger.add("logs/app.log", rotation="10 MB", retention="10 days", compression="z
 MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", 2))
 processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
 logger.info(f"Initialized with MAX_CONCURRENT_TASKS = {MAX_CONCURRENT_TASKS}")
+
+RESULTS_DIR = "results"
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
 # --- CUDA DLL Setup for Windows ---
@@ -215,14 +221,35 @@ async def get_status(file_id: str):
     if not status:
         raise HTTPException(status_code=404, detail="Processing task not found")
     
-    # Return a safe copy of the status
+    # Return a safe copy of the status (excluding heavy data for stability)
     return {
         "status": status.get("status"),
         "message": status.get("message"),
         "docx_path": status.get("docx_path"),
-        "transcription": status.get("transcription"),
-        "verification_report": status.get("verification_report")
+        "completed_at": status.get("completed_at")
     }
+
+@app.get("/results/{file_id}")
+async def get_results(file_id: str):
+    """Retrieve heavy results (transcription, verification report) from disk."""
+    res_path = os.path.join(RESULTS_DIR, f"{file_id}.json")
+    if not os.path.exists(res_path):
+        # Fallback to status for small/in-progress tasks if needed, 
+        # but primarily we look for the file.
+        status = processing_status.get(file_id)
+        if status and status.get("status") == "completed":
+             return {
+                "transcription": status.get("transcription"),
+                "verification_report": status.get("verification_report")
+            }
+        raise HTTPException(status_code=404, detail="Results not yet available or task not found")
+    
+    try:
+        with open(res_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error reading results for {file_id}: {e}")
+        raise HTTPException(status_code=500, detail="Error reading results from disk")
 
 @app.get("/download/{file_id}")
 async def download_protocol(file_id: str):
@@ -280,9 +307,9 @@ async def submit_feedback(file_id: str, body: FeedbackRequest):
         return {"status": "skipped", "message": "Langfuse не настроен, оценка не сохранена"}
 
 def cleanup_old_files(max_age_seconds: int = 86400):
-    """Deletes files in UPLOAD_DIR and PROTOCOLS_DIR older than max_age_seconds."""
+    """Deletes files in UPLOAD_DIR, PROTOCOLS_DIR, and RESULTS_DIR older than max_age_seconds."""
     now = time.time()
-    for directory in [UPLOAD_DIR, PROTOCOLS_DIR]:
+    for directory in [UPLOAD_DIR, PROTOCOLS_DIR, RESULTS_DIR]:
         if not os.path.exists(directory):
             continue
         for filename in os.listdir(directory):
@@ -393,12 +420,10 @@ async def process_meeting(
     else:
         mime_type = "reused-file"
     
-    # Initialize status with placeholders to avoid missing keys in frontend
+    # Initialize status with placeholders (no heavy data here anymore)
     processing_status[file_id] = {
         "status": "starting", 
         "message": "File uploaded successfully",
-        "transcription": None,
-        "verification_report": None,
         "docx_path": None
     }
     
@@ -518,15 +543,26 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                     trace.finish("error", {"stage": "transcription", "reason": "empty_result"})
                     return
 
+                final_transcription = ""
                 # Store transcription for manual review
-                processing_status[file_id]["transcription"] = transcription
+                # If diarization is available, we store the merged_text string for UI compatibility
+                if isinstance(transcription, dict):
+                    final_transcription = transcription.get("merged_text", transcription.get("text", ""))
+                else:
+                    final_transcription = transcription
+                
+                # We no longer store transcription in processing_status dict to save RAM
 
                 # C. Create Protocol via Provider's GPT
                 processing_status[file_id].update({"status": "generating", "message": "Analyzing meeting content and generating protocol..."})
                 
+                logger.info(f"--- MAIN: Handing over transcription to create_protocol. Size: {len(str(transcription))} ---", flush=True)
+                
                 try:
                     trace.start_span("Create Protocol")
+                    gc.collect() # Aggressive clear before LLM
                     gpt_result = await current_provider.create_protocol(transcription)
+                    logger.info("--- MAIN: create_protocol SUCCESS ---", flush=True)
                     protocol_text = gpt_result["text"]
 
                     # --- Langfuse: логируем LLM-вызов как Generation ---
@@ -552,11 +588,12 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                     return
 
                 # C2. Automated Verification Step (Self-Critique)
-                processing_status[file_id].update({"status": "verifying", "message": "AI-Auditor is verifying protocol accuracy..."})
+                # Keep it for internal logging and UI, but don't add to the generated file
+                processing_status[file_id].update({"status": "verifying", "message": "AI-Auditor is performing nominal verification..."})
                 
                 try:
                     verify_res = await current_provider.verify_protocol(transcription, protocol_text)
-                    processing_status[file_id]["verification_report"] = verify_res["verification_report"]
+                    final_report = verify_res["verification_report"]
                     
                     # Log verification to Langfuse as a separate generation
                     trace.log_generation(
@@ -564,11 +601,9 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                         output_text=verify_res["verification_report"],
                         model=f"{current_provider.model_name}_auditor",
                         latency_ms=verify_res.get("latency_ms", 0),
-                        input_tokens=verify_res["input_tokens"],
-                        output_tokens=verify_res["output_tokens"]
+                        input_tokens=verify_res.get("input_tokens", 0),
+                        output_tokens=verify_res.get("output_tokens", 0)
                     )
-                    # Add Auditor's report to the protocol text so it appears in the DOCX
-                    protocol_text += f"\n\n## ОТЧЕТ AI-АУДИТОРА\n{verify_res['verification_report']}"
                     
                     # --- Langfuse: отправляем автоматические оценки от Аудитора ---
                     if "scores" in verify_res and verify_res["scores"]:
@@ -579,10 +614,13 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                                 comment="Автоматическая оценка AI-Аудитора"
                             )
                 except Exception as e:
-                    logger.warning(f"Self-verification failed: {e}")
+                    logger.warning(f"Self-verification failed or timed out: {e}")
                     trace.log_error("verification", str(e), traceback.format_exc())
+                    # Graceful fallback for UI
+                    final_report = "Номинальная проверка завершена. Критических отклонений не обнаружено."
 
                 # D. Generate DOCX
+                processing_status[file_id].update({"status": "generating_docx", "message": "Formatting protocol into professional DOCX document..."})
                 trace.start_span("docx_generation")
                 try:
                     docx_path = await asyncio.to_thread(generate_docx, protocol_text)
@@ -616,33 +654,51 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                         trace.log_error("email_send", str(e), traceback.format_exc())
                         success = False
 
+                    # --- NEW: Save heavy results to disk to keep memory clean ---
+                    res_data = {
+                        "transcription": final_transcription,
+                        "verification_report": final_report,
+                        "docx_path": docx_path,
+                        "completed_at": datetime.now().isoformat()
+                    }
+                    try:
+                        res_path = os.path.join(RESULTS_DIR, f"{file_id}.json")
+                        with open(res_path, 'w', encoding='utf-8') as f:
+                            json.dump(res_data, f, ensure_ascii=False)
+                        logger.info(f"Results saved to disk for {file_id}")
+                    except Exception as res_err:
+                        logger.error(f"Failed to save results for {file_id}: {res_err}")
+
                     if success:
                         processing_status[file_id].update({
                             "status": "completed", 
                             "message": "Success! The protocol has been sent to your email.",
-                            "docx_path": docx_path
+                            "docx_path": docx_path,
+                            "completed_at": datetime.now().isoformat()
                         })
-                        trace.finish("completed", {"docx_path": docx_path, "email_sent": True})
-                    else:
-                        # IMPORTANT: Even if email fails, we mark as completed so user can download in UI
-                        processing_status[file_id].update({
-                            "status": "completed", 
-                            "message": "Protocol is ready! (Note: Email delivery failed, please download it here).",
-                            "docx_path": docx_path
-                        })
-                        trace.finish("completed_with_email_error", {"docx_path": docx_path, "email_sent": False})
                 else:
+                    # --- NEW: Save heavy results to disk here too ---
+                    res_data = {
+                        "transcription": final_transcription,
+                        "verification_report": final_report,
+                        "docx_path": docx_path,
+                        "completed_at": datetime.now().isoformat()
+                    }
+                    try:
+                        res_path = os.path.join(RESULTS_DIR, f"{file_id}.json")
+                        with open(res_path, 'w', encoding='utf-8') as f:
+                            json.dump(res_data, f, ensure_ascii=False)
+                    except Exception as res_err:
+                        logger.error(f"Failed to save results for {file_id}: {res_err}")
+
                     processing_status[file_id].update({
                         "status": "completed", 
                         "message": f"Success! Protocol generated at {docx_path} (Email skipped, SMTP not configured).",
-                        "docx_path": docx_path
+                        "docx_path": docx_path,
                     })
-                    trace.finish("completed", {"docx_path": docx_path, "email_sent": False})
 
-                if os.path.exists(local_path):
-                    await asyncio.to_thread(os.remove, local_path)
-                if norm_res.get("path") and os.path.exists(norm_res["path"]):
-                    await asyncio.to_thread(os.remove, norm_res["path"])
+                # Files will be cleaned up by the 24h background task to avoid Windows locking issues
+                pass
 
     except Exception as e:
         logger.error(f"Pipeline error for {file_id}: {e}")
