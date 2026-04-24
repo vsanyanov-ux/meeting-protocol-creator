@@ -34,6 +34,8 @@ models_cache/
 backend/models_cache/
 ollama_data/
 backend/Test Audio/
+backend/storage/
+storage/
 test_meeting_30s.mp4
 
 # Logs
