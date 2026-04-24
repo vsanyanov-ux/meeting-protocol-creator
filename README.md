@@ -53,7 +53,7 @@ graph TD
 |-----------|------------|
 | **Frontend** | React, Vite, Framer Motion, Glassmorphism UI |
 | **Backend** | Python, FastAPI, Pydantic |
-| **Local AI** | Ollama (Qwen 3.5), Faster-Whisper (CUDA Optimized) |
+| **Local AI** | Ollama (Qwen 2.5 7B), Faster-Whisper (CUDA Optimized) |
 | **Cloud AI** | Yandex SpeechKit v2, Yandex GPT (Latest) |
 | **Observability** | Langfuse v4 (SDK + UI) |
 | **Tracing** | OpenTelemetry compatible status tracking |

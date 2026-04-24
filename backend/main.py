@@ -185,7 +185,7 @@ def get_provider(provider_type: Optional[str] = None, device: Optional[str] = No
         return LocalProvider(
             whisper_model_size=os.getenv("WHISPER_MODEL", "medium"),
             ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
-            ollama_model=os.getenv("OLLAMA_MODEL", "qwen3.5:4b"),
+            ollama_model=os.getenv("OLLAMA_MODEL", "qwen2.5:7b"),
             device=device
         )
 
