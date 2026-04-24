@@ -137,6 +137,22 @@ const App = () => {
     }
   };
 
+  const getProgress = () => {
+    if (!status || !status.status) return 0;
+    
+    switch(status.status) {
+      case 'starting': return 5;
+      case 'transcribing': return 40;
+      case 'summarizing': return 75;
+      case 'verifying': return 90;
+      case 'sending': return 95;
+      case 'completed': return 100;
+      case 'failed': return 0;
+      case 'error': return 0;
+      default: return status.status ? 50 : 0;
+    }
+  };
+
   const reset = () => {
     setFile(null);
     setFileId(null);
@@ -147,12 +163,26 @@ const App = () => {
 
   const currentStepIndex = () => {
     if (!status) return 0;
-    const steps = ['starting', 'uploading', 'transcribing', 'generating', 'verifying', 'emailing', 'completed'];
-    const idx = steps.indexOf(status.status);
+    // Map backend status names to indices: 
+    // starting=0, uploading=1, transcribing=2, summarizing=3, verifying=4, sending=5, completed=6
+    const steps = ['starting', 'uploading', 'transcribing', 'summarizing', 'verifying', 'sending', 'completed'];
+    // Fallback mapping for older/alternative names
+    let currentStatus = status.status;
+    if (currentStatus === 'generating') currentStatus = 'summarizing';
+    if (currentStatus === 'emailing') currentStatus = 'sending';
+    
+    const idx = steps.indexOf(currentStatus);
     return idx === -1 ? 0 : idx;
   };
 
-  const isActiveStep = (stepName) => status?.status === stepName;
+  const isActiveStep = (stepName) => {
+    if (!status?.status) return false;
+    let currentStatus = status.status;
+    // Map backend status to frontend step names
+    if (currentStatus === 'summarizing') currentStatus = 'generating';
+    if (currentStatus === 'sending') currentStatus = 'emailing';
+    return currentStatus === stepName;
+  };
 
   return (
     <>

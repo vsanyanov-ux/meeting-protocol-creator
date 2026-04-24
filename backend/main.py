@@ -124,11 +124,11 @@ async def lifespan(app: FastAPI):
     provider_type = os.getenv("AI_PROVIDER", "yandex").lower()
     logger.info(f"Startup OK. Default provider: {provider_type}. CORS allowed origins: {ALLOWED_ORIGINS}")
     yield
-    logger.info("Shutting down Протоколист API")
+    logger.info("Shutting down Протоколист v4.2.1 🚀 API")
 
 app = FastAPI(
     title="Протоколист API",
-    version="4.2.0",
+    version="4.2.1",
     lifespan=lifespan
 )
 
@@ -197,61 +197,72 @@ ai_provider = get_provider()
 
 UPLOAD_DIR = "uploads"
 PROTOCOLS_DIR = "temp_protocols"
-for d in [UPLOAD_DIR, PROTOCOLS_DIR]:
+STORAGE_DIR = "storage"
+for d in [UPLOAD_DIR, PROTOCOLS_DIR, STORAGE_DIR]:
     if not os.path.exists(d):
         os.makedirs(d)
 
 # --- Persistent Status Management ---
-class StatusManager:
-    def __init__(self, storage_dir: str = "storage"):
-        self.storage_dir = storage_dir
-        if not os.path.exists(self.storage_dir):
-            os.makedirs(self.storage_dir)
+import sqlite3
 
-    def _get_path(self, file_id: str):
-        return os.path.join(self.storage_dir, f"status_{file_id}.json")
+class StatusManager:
+    def __init__(self):
+        if not os.path.exists(STORAGE_DIR):
+            os.makedirs(STORAGE_DIR)
+        self.db_path = os.path.join(STORAGE_DIR, "status.db")
+        self._init_db()
+
+    def _init_db(self):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tasks (
+                    file_id TEXT PRIMARY KEY,
+                    data TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
 
     def get(self, file_id: str) -> Dict[str, Any]:
-        path = self._get_path(file_id)
-        if not os.path.exists(path):
-            return {}
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("SELECT data FROM tasks WHERE file_id = ?", (file_id,))
+                row = cursor.fetchone()
+                if row:
+                    return json.loads(row[0])
         except Exception as e:
-            logger.error(f"Error reading status for {file_id}: {e}")
-            return {}
+            logger.error(f"DB Error reading status for {file_id}: {e}")
+        return {}
 
     def set(self, file_id: str, status: Dict[str, Any]):
-        path = self._get_path(file_id)
-        temp_path = path + ".tmp"
         try:
-            with open(temp_path, "w", encoding="utf-8") as f:
-                json.dump(status, f, ensure_ascii=False, indent=2)
-            # Atomic replacement: prevents reading partial or locked files
-            os.replace(temp_path, path)
+            status_json = json.dumps(status, ensure_ascii=False)
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("""
+                    INSERT INTO tasks (file_id, data, updated_at) 
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(file_id) DO UPDATE SET 
+                        data = excluded.data,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (file_id, status_json))
         except Exception as e:
-            logger.error(f"Error writing status for {file_id}: {e}")
-            if os.path.exists(temp_path):
-                try: os.remove(temp_path)
-                except: pass
+            logger.error(f"DB Error writing status for {file_id}: {e}")
 
     def update(self, file_id: str, data: Dict[str, Any]):
         status = self.get(file_id)
+        if not status and data.get("status") != "starting":
+            # Don't create a partial status if it was supposed to exist
+            return
+            
         status.update(data)
         self.set(file_id, status)
 
     def get_all_active_count(self) -> int:
-        count = 0
         try:
-            for filename in os.listdir(self.storage_dir):
-                if filename.startswith("status_"):
-                    status = self.get(filename.replace("status_", "").replace(".json", ""))
-                    if status.get("status") not in ["completed", "failed", "error"]:
-                        count += 1
-        except Exception:
-            pass
-        return count
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("SELECT COUNT(*) FROM tasks WHERE data LIKE '%\"status\": \"processing\"%' OR data LIKE '%\"status\": \"transcribing\"%'")
+                return cursor.fetchone()[0]
+        except:
+            return 0
 
 status_manager = StatusManager()
 

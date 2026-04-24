@@ -181,6 +181,8 @@ class LocalProvider(BaseAIProvider):
                 full_text.append(segment.text)
                 if i % 10 == 0 and i > 0:
                     logger.info(f"Processed {i} segments...")
+                    if status_updater:
+                        status_updater("transcribing", f"Обработано {i} фрагментов речи...")
                 
             transcription = "\n".join(full_text).strip()
             duration_sec = info.duration
