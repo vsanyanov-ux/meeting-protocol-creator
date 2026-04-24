@@ -37,6 +37,7 @@ const App = () => {
   const [systemInfo, setSystemInfo] = useState({ location: 'Загрузка...', default_provider: 'yandex', provider_name: 'Яндекс Cloud', is_online: false });
   const [selectedProvider, setSelectedProvider] = useState('local');
   const [isBackendOnline, setIsBackendOnline] = useState(false);
+  const [diarize, setDiarize] = useState(false);
   const fileInputRef = useRef(null);
   const backendFailCount = useRef(0);
 
@@ -107,7 +108,8 @@ const App = () => {
         recipientEmail, 
         targetProvider, 
         isFallback ? fileId : null, 
-        forceCpu
+        forceCpu,
+        diarize
       );
       if (!isFallback) setFileId(result.file_id);
       setStatus({ status: 'starting', message: 'Перезапуск с новыми параметрами...' });
@@ -302,6 +304,47 @@ const App = () => {
                         onClick={() => setSelectedProvider('local')} 
                       />
                     </div>
+                  </div>
+
+                  {/* Diarization Toggle */}
+                  <div className="input-field-group" style={{ marginBottom: '1.5rem' }}>
+                    <label 
+                      style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        gap: '0.75rem', 
+                        cursor: 'pointer',
+                        padding: '1rem',
+                        background: 'rgba(255,255,255,0.05)',
+                        borderRadius: '12px',
+                        border: diarize ? '1px solid var(--secondary)' : '1px solid rgba(255,255,255,0.1)',
+                        transition: 'all 0.3s ease'
+                      }}
+                      onClick={() => setDiarize(!diarize)}
+                    >
+                      <div style={{ 
+                        width: '20px', 
+                        height: '20px', 
+                        borderRadius: '4px', 
+                        border: '2px solid var(--secondary)',
+                        background: diarize ? 'var(--secondary)' : 'transparent',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        transition: 'all 0.2s ease'
+                      }}>
+                        {diarize && <CheckCircle2 size={14} color="white" />}
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <span style={{ display: 'block', fontSize: '0.95rem', fontWeight: 600, color: diarize ? 'white' : 'var(--text-muted)' }}>
+                          Диаризация (Распознавание спикеров)
+                        </span>
+                        <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                          Разделение голосов и определение имен участников из контекста
+                        </span>
+                      </div>
+                      <Mic size={18} style={{ color: diarize ? 'var(--secondary)' : 'var(--text-muted)', opacity: 0.6 }} />
+                    </label>
                   </div>
 
                   <div className="input-field-group" style={{ marginBottom: '1.5rem' }}>
