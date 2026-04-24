@@ -6,7 +6,7 @@ const api = axios.create({
   baseURL: API_BASE_URL,
 });
 
-export const uploadMeeting = async (file, email, provider, existingFileId = null, forceCpu = false, diarize = false) => {
+export const uploadMeeting = async (file, email, provider, existingFileId = null, forceCpu = false, diarize = false, sessionId = null) => {
   const formData = new FormData();
   
   if (file) {
@@ -18,6 +18,7 @@ export const uploadMeeting = async (file, email, provider, existingFileId = null
   if (existingFileId) formData.append('existing_file_id', existingFileId);
   if (forceCpu) formData.append('force_cpu', 'true');
   if (diarize) formData.append('diarize', 'true');
+  if (sessionId) formData.append('session_id', sessionId);
 
   const url = `${API_BASE_URL}/process-meeting`;
 

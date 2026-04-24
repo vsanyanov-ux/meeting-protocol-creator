@@ -16,6 +16,7 @@ from pyannote.audio import Pipeline
 
 from .base import BaseAIProvider
 from exceptions import HardwareError
+from langfuse_client import get_prompt
 
 class LocalProvider(BaseAIProvider):
     def __init__(self, 
@@ -134,7 +135,7 @@ class LocalProvider(BaseAIProvider):
                 def load_pipeline():
                     pipeline = Pipeline.from_pretrained(
                         "pyannote/speaker-diarization-3.1",
-                        use_auth_token=hf_token
+                        token=hf_token
                     )
                     if self.device == "cuda" and torch.cuda.is_available():
                         pipeline.to(torch.device("cuda"))
@@ -397,51 +398,87 @@ class LocalProvider(BaseAIProvider):
             return result
 
     async def _summarize_chunk(self, chunk: str, index: int, total: int) -> str:
-        system_text = (
-            "Ты — профессиональный секретарь. Твоя задача — выделить все важные факты, решения и поручения "
+        fallback_system = (
+            "Ты — профессиональный секретарь и эксперт по анализу деловых встреч. Твоя задача — выделить все важные факты, решения и поручения "
             f"из части {index} (из {total}) транскрипции совещания. Пиши на РУССКОМ ЯЗЫКЕ.\n"
-            "Стиль: максимально плотный, тезисный, без вступлений. Сохраняй все фамилии и цифры."
+            "Стиль: максимально плотный, тезисный, без вступлений. Сохраняй все имена, цифры и ключевые термины."
         )
-        messages = [{"role": "system", "content": system_text}, {"role": "user", "content": f"ВЫДЕЛИ ГЛАВНОЕ:\n\n{chunk}"}]
+        system_text = get_prompt("meeting_summarize_chunk", fallback=fallback_system)
+        
+        # Если промт из Langfuse, он может содержать {{index}} и {{total}}
+        if "{{" in system_text:
+            system_text = system_text.replace("{{index}}", str(index)).replace("{{total}}", str(total))
+
+        user_prompt = get_prompt("meeting_summarize_chunk_user", fallback="ВЫДЕЛИ ГЛАВНОЕ:\n\n{{chunk}}")
+        user_text = user_prompt.replace("{{chunk}}", chunk)
+
+        messages = [{"role": "system", "content": system_text}, {"role": "user", "content": user_text}]
         res = await self._call_ollama(messages, temperature=0.1)
         return res.get("text", "Ошибка обработки части.")
 
     async def _create_protocol_single(self, text: str, is_consolidated: bool = False) -> Dict[str, Any]:
         prompt_prefix = "составь подробный протокол" if not is_consolidated else "составь ФИНАЛЬНЫЙ СВОДНЫЙ протокол"
-        system_text = (
-            "Ты — ведущий эксперт по техническому документообороту. Твоя задача — составить официальный протокол совещания на основе " + 
+        source_type = "расшифровки" if not is_consolidated else "тезисов"
+        
+        fallback_system = (
+            "Ты — профессиональный специалист по ведению протоколов совещаний. Твоя задача — составить официальный протокол на основе " + 
             ("тезисов.\n\n" if is_consolidated else "расшифровки.\n\n") +
-            "1. ЯЗЫК: СТРОГО РУССКИЙ.\n2. СОХРАННОСТЬ ДАННЫХ: Технические детали, цифры.\n"
+            "1. ЯЗЫК: СТРОГО РУССКИЙ.\n2. ТОЧНОСТЬ: Сохраняй все важные детали, имена, даты и цифры. Не выдумывай факты, которых нет в тексте.\n"
             "## Общая информация\n## Участники\n## Повестка дня\n## Ход обсуждения\n## Принятые решения и Поручения\n"
             "| № | Поручение | Ответственный | Срок исполнения |\n|---|-----------|---------------|------------------|\n\n## Нерешенные вопросы"
         )
-        messages = [{"role": "system", "content": system_text}, {"role": "user", "content": f"Изучи текст и {prompt_prefix} НА РУССКОМ:\n\n{text}"}]
+        
+        system_text = get_prompt("meeting_create_protocol", fallback=fallback_system)
+        
+        user_prompt = get_prompt("meeting_create_protocol_user", fallback=f"Изучи текст и {prompt_prefix} НА РУССКОМ:\n\n{{text}}")
+        user_text = user_prompt.replace("{{text}}", text)\
+                               .replace("{{source_type}}", source_type)\
+                               .replace("{{action_type}}", prompt_prefix)
+
+        messages = [{"role": "system", "content": system_text}, {"role": "user", "content": user_text}]
         return await self._call_ollama(messages, temperature=0.2)
 
     async def verify_protocol(self, transcription: str, protocol: str) -> Dict[str, Any]:
-        system_text = "Ты — корпоративный аудитор. Сравни РАСШИФРОВКУ и ПРОТОКОЛ. Выдай краткий отчет на русском."
-        messages = [{"role": "system", "content": system_text}, {"role": "user", "content": f"РАСШИФРОВКА:\n{transcription}\n\nПРОТОКОЛ:\n{protocol}"}]
+        fallback_system = "Ты — корпоративный аудитор. Сравни РАСШИФРОВКУ и ПРОТОКОЛ. Выдай краткий отчет на русском."
+        system_text = get_prompt("meeting_verify_protocol", fallback=fallback_system)
+        
+        user_prompt = get_prompt("meeting_verify_protocol_user", fallback="РАСШИФРОВКА:\n{{transcription}}\n\nПРОТОКОЛ:\n{{protocol}}")
+        user_text = user_prompt.replace("{{transcription}}", transcription).replace("{{protocol}}", protocol)
+        
+        messages = [{"role": "system", "content": system_text}, {"role": "user", "content": user_text}]
         res = await self._call_ollama(messages, temperature=0.1)
         return {"verification_report": res["text"] or "Ошибка верификации", "input_tokens": res["input_tokens"], "output_tokens": res["output_tokens"]}
 
     async def format_transcript_with_ai(self, transcription: str) -> Dict[str, Any]:
-        system_text = (
-            "Ты — профессиональный редактор протоколов. Твоя задача: заменить технические метки спикеров на реальные имена, ЕСЛИ они упоминаются в тексте.\n\n"
+        fallback_system = (
+            "Ты — профессиональный редактор. Твоя задача: заменить 'Спикер X:' на реальные имена из контекста.\n"
             "ПРАВИЛА:\n"
-            "1. ОБЯЗАТЕЛЬНО сохраняй формат '[ММ:СС] Имя:' в начале каждой реплики.\n"
-            "2. Если имя неизвестно, ОСТАВЛЯЙ 'Спикер X:' как есть. НЕ УДАЛЯЙ МЕТКИ.\n"
-            "3. Если в тексте кто-то говорит 'Я Алексей' или к нему обращаются 'Саша', замени 'Спикер 1:' на соответствующее имя.\n"
-            "4. Исправь пунктуацию, но НЕ МЕНЯЙ слова и НЕ УДАЛЯЙ временные метки.\n"
-            "5. Ответ должен содержать ВЕСЬ текст расшифровки с метками."
+            "1. ФОРМАТ СТРОГО: '[ММ:СС] Имя: Текст' (например: '[01:15] Алексей: Привет').\n"
+            "2. Если имя не найдено, ОСТАВЛЯЙ 'Спикер X:'.\n"
+            "3. Выдай ТОЛЬКО обработанный текст без своих комментариев и вступлений.\n"
+            "4. Не удаляй временные метки."
         )
-        messages = [{"role": "system", "content": system_text}, {"role": "user", "content": f"ОБРАБОТАЙ ТЕКСТ (СОХРАНИ МЕТКИ):\n\n{transcription}"}]
-        res = await self._call_ollama(messages, temperature=0.1)
-        # Fallback to original if LLM output is too short, empty, or lost labels
-        formatted = res.get("text")
-        has_labels = "[" in (formatted or "") and ":" in (formatted or "")
+        system_text = get_prompt("meeting_humanize_speakers", fallback=fallback_system)
         
+        user_prompt = get_prompt("meeting_humanize_speakers_user", fallback="Транскрипция для обработки:\n\n{{transcription}}")
+        user_text = user_prompt.replace("{{transcription}}", transcription)
+
+        messages = [{"role": "system", "content": system_text}, {"role": "user", "content": user_text}]
+        res = await self._call_ollama(messages, temperature=0.1)
+        
+        formatted = res.get("text", "")
+        
+        # --- Post-processing to clean LLM artifacts ---
+        # 1. Remove echo of instructions if present
+        if "Транскрипция для обработки:" in formatted:
+            formatted = formatted.split("Транскрипция для обработки:")[-1].strip()
+        if "ОБРАБОТАЙ ТЕКСТ" in formatted:
+            formatted = formatted.split("ОБРАБОТАЙ ТЕКСТ")[-1].strip()
+        
+        # Fallback logic
+        has_labels = "[" in (formatted or "") and ":" in (formatted or "")
         if not formatted or len(formatted) < len(transcription) * 0.5 or not has_labels:
-            logger.warning(f"LLM humanization result suspicious (length={len(formatted or '')}, has_labels={has_labels}). Falling back to raw diarization.")
+            logger.warning("LLM humanization failed or returned garbage. Falling back to raw.")
             formatted = transcription
             
-        return {"formatted_text": formatted, "input_tokens": res["input_tokens"], "output_tokens": res["output_tokens"]}
+        return {"formatted_text": formatted.strip(), "input_tokens": res["input_tokens"], "output_tokens": res["output_tokens"]}

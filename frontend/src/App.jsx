@@ -38,8 +38,19 @@ const App = () => {
   const [selectedProvider, setSelectedProvider] = useState('local');
   const [isBackendOnline, setIsBackendOnline] = useState(false);
   const [diarize, setDiarize] = useState(false);
+  const [sessionId, setSessionId] = useState(null);
   const fileInputRef = useRef(null);
   const backendFailCount = useRef(0);
+
+  // Initialize Session ID
+  useEffect(() => {
+    let sid = localStorage.getItem('protocolist_session_id');
+    if (!sid) {
+      sid = `sid-${Math.random().toString(36).substr(2, 9)}-${Date.now().toString(36)}`;
+      localStorage.setItem('protocolist_session_id', sid);
+    }
+    setSessionId(sid);
+  }, []);
 
   // Fetch system info on mount
   useEffect(() => {
@@ -109,7 +120,8 @@ const App = () => {
         targetProvider, 
         isFallback ? fileId : null, 
         forceCpu,
-        diarize
+        diarize,
+        sessionId
       );
       if (!isFallback) setFileId(result.file_id);
       setStatus({ status: 'starting', message: 'Перезапуск с новыми параметрами...' });

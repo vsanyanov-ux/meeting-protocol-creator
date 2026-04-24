@@ -56,11 +56,12 @@ class PipelineTrace:
     Разделяет Trace ID (32 hex) и Span ID (16 hex) для соответствия валидации SDK.
     """
 
-    def __init__(self, file_id: str, filename: str = "", provider: str = "yandex", metadata: dict = None):
+    def __init__(self, file_id: str, filename: str = "", provider: str = "yandex", metadata: dict = None, session_id: str = None):
         self.file_id = file_id
         self.filename = filename
         self.provider = provider
         self.metadata = metadata or {}
+        self.session_id = session_id
         self.lf = get_langfuse()
         
         # Langfuse v4 OTel needs hex IDs (32 chars for trace, 16 for span)
@@ -73,30 +74,61 @@ class PipelineTrace:
             
         self._trace_obj = None
         self._root_obs = None
+        self._prop_ctx = None
         self._active_spans = {}
         self.total_cost = 0.0
 
     def __enter__(self):
         if not self.lf: return self
         try:
-            ctx = {"trace_id": self.trace_id}
-            # Создаем корневой спан, который выступит корнем для трейса в Dashboard
+            # 1. Сначала включаем официальный метод проброса атрибутов трейса.
+            # Это гарантирует, что ВСЕ последующие наблюдения в этом контексте получат sessionId.
+            self._prop_ctx = self.lf.propagate_attributes(
+                session_id=self.session_id,
+                trace_name=f"Meeting: {self.filename}",
+                tags=["meeting-protocol", self.provider]
+            )
+            self._prop_ctx.__enter__()
+
+            # 2. Начинаем корневой span.
             self._root_obs = self.lf.start_observation(
                 name="meeting_protocol_processing",
                 as_type="span",
-                trace_context=ctx,
+                input={"filename": self.filename, "provider": self.provider},
                 metadata={
-                    "filename": self.filename,
-                    "provider": self.provider,
                     "file_id": self.file_id,
                     "started_at": datetime.datetime.now().isoformat(),
-                    "tags": ["meeting-protocol", self.provider],
                     **self.metadata
                 }
             )
+
+            # 3. Принудительно устанавливаем атрибуты на корень через OTel
+            if self.session_id and self._root_obs and hasattr(self._root_obs, "_otel_span"):
+                try:
+                    self._root_obs._otel_span.set_attribute("session.id", self.session_id)
+                    self._root_obs._otel_span.set_attribute("user.id", self.metadata.get("email", "unknown"))
+                except:
+                    pass
             
-            self.lf.flush()
-            logger.info(f"Started Langfuse v4 trace: {self.trace_id} (Name: meeting_protocol_processing)")
+            # 4. ФИНАЛЬНЫЙ ХАК: Используем низкоуровневое API для прямой регистрации трейса с Session ID.
+            # Это гарантирует, что даже если OTel даст сбой, Langfuse получит данные через API.
+            try:
+                from langfuse.api import TraceBody
+                self.lf.api.trace.create(
+                    body=TraceBody(
+                        id=self.trace_id,
+                        name=f"Meeting: {self.filename}",
+                        sessionId=self.session_id,
+                        userId=self.metadata.get("email"),
+                        metadata=self.metadata,
+                        input={"filename": self.filename, "provider": self.provider},
+                        tags=["meeting-protocol", self.provider]
+                    )
+                )
+            except Exception as ae:
+                logger.debug(f"Direct trace creation failed (not critical): {ae}")
+
+            logger.info(f"Started Langfuse v4 trace: {self.trace_id} (Session: {self.session_id})")
             return self
         except Exception as e:
             import traceback
@@ -107,6 +139,13 @@ class PipelineTrace:
         if exc_type:
             self.log_error("exception", str(exc_val))
         
+        # Завершаем контекст проброса атрибутов
+        if self._prop_ctx:
+            try:
+                self._prop_ctx.__exit__(exc_type, exc_val, exc_tb)
+            except:
+                pass
+
         # Завершаем трейс автоматически, если он еще не был завершен вручную
         self.finish(status="error" if exc_type else "completed")
         
@@ -123,7 +162,7 @@ class PipelineTrace:
     def start_span(self, name: str, input_data: dict = None) -> Optional[Any]:
         if not self.lf or not self._root_obs: return None
         try:
-            # В SDK v4 вызываем start_observation на родителе для авто-привязки
+            # Вызываем start_observation на родителе (трейсе)
             span = self._root_obs.start_observation(
                 name=name,
                 as_type="span",
@@ -186,7 +225,7 @@ class PipelineTrace:
 
             start_t = datetime.datetime.now() - datetime.timedelta(milliseconds=latency_ms)
             
-            # Самый стабильный способ - вызов на корневом объекте
+            # Используем start_observation с as_type="generation"
             gen = self._root_obs.start_observation(
                 name=gen_name,
                 as_type="generation",
@@ -215,7 +254,7 @@ class PipelineTrace:
                 as_type="generation",
                 model=model,
                 input={"duration_sec": d_sec},
-                usage_details={"unit": 0, "input": int(d_sec)},
+                usage_details={"unit": "SECONDS", "input": int(d_sec)},
                 cost_details={"total": cost}
             )
             gen.update(output="[Audio Transcription]")
@@ -276,6 +315,19 @@ class PipelineTrace:
         except Exception as e:
             logger.error(f"Langfuse trace finish error: {e}")
 
+    def get_prompt(self, name: str, tag: str = "latest", type: str = "text") -> Optional[Any]:
+        """
+        Получить промт из Langfuse. 
+        Позволяет управлять версиями промтов через Dashboard.
+        """
+        if not self.lf: return None
+        try:
+            # В SDK v4.0.6 параметр называется 'label' вместо 'tag'
+            return self.lf.get_prompt(name, label=tag, type=type)
+        except Exception as e:
+            logger.error(f"Langfuse get_prompt error ({name}): {e}")
+            return None
+
 
 def submit_score(file_id: str, score_name: str, value: float, comment: str = "") -> bool:
     lf = get_langfuse()
@@ -289,3 +341,19 @@ def submit_score(file_id: str, score_name: str, value: float, comment: str = "")
     except Exception as e:
         logger.error(f"Langfuse submit_score error: {e}")
         return False
+
+
+def get_prompt(name: str, tag: str = "latest", fallback: str = "") -> str:
+    """
+    Глобальная функция для получения текста промта. 
+    Если Langfuse не настроен или промт не найден, возвращает fallback.
+    """
+    lf = get_langfuse()
+    if not lf: return fallback
+    try:
+        # В SDK v4.0.6 параметр называется 'label' вместо 'tag'
+        prompt_obj = lf.get_prompt(name, label=tag)
+        return prompt_obj.prompt
+    except Exception as e:
+        logger.debug(f"Langfuse prompt '{name}' not found, using fallback. Error: {e}")
+        return fallback

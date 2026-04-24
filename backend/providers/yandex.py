@@ -11,6 +11,7 @@ from loguru import logger
 
 from .base import BaseAIProvider
 from exceptions import ProviderQuotaError, ProviderNetworkError
+from langfuse_client import get_prompt
 
 class YandexProvider(BaseAIProvider):
     def __init__(self, api_key: str, folder_id: str, 
@@ -215,12 +216,12 @@ class YandexProvider(BaseAIProvider):
 
     async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
-        system_text = (
-            "Ты — ведущий эксперт по техническому документообороту и промышленному инжинирингу. Твоя задача — составить официальный протокол совещания на основе расшифровки.\n\n"
+        fallback_system = (
+            "Ты — профессиональный специалист по ведению протоколов совещаний. Твоя задача — составить официальный протокол на основе расшифровки.\n\n"
             "ОБЯЗАТЕЛЬНЫЕ ТРЕБОВАНИЯ:\n"
-            "1. ЯЗЫК: ВЕСЬ ответ должен быть СТРОГО на РУССКОМ языке. Использование английского языка ЗАПРЕЩЕНО (кроме технических кодов и брендов).\n"
-            "2. СОХРАННОСТЬ ДАННЫХ: Обязательно сохраняй технические маркировки, артикулы, названия сплавов, коды изделий (например: марки стали 08Х18Н10Т, ГОСТы, чертежи).\n"
-            "3. ТОЧНОСТЬ: Будь точен в числовых параметрах и единицах измерения.\n"
+            "1. ЯЗЫК: ВЕСЬ ответ должен быть СТРОГО на РУССКОМ языке.\n"
+            "2. ТОЧНОСТЬ: Сохраняй все важные детали, имена, даты, цифры и ключевые термины. Не выдумывай факты, которых нет в тексте.\n"
+            "3. СТРУКТУРА: Соблюдай четкую иерархию заголовков.\n"
             "4. ТАБЛИЦА ПОРУЧЕНИЙ: Секцию 'Принятые решения и Поручения' ОБЯЗАТЕЛЬНО оформляй в виде Markdown-таблицы. ЗАПРЕЩЕНО использовать списки для задач.\n\n"
             "СТРУКТУРА ОТВЕТА:\n"
             "## Общая информация\n"
@@ -234,9 +235,16 @@ class YandexProvider(BaseAIProvider):
             "## Нерешенные вопросы\n\n"
             "ПИШИ ТОЛЬКО НА РУССКОМ. БУДЬ ЛАКОНИЧНЫМ И СТРОГИМ."
         )
+        system_text = get_prompt("meeting_create_protocol", fallback=fallback_system)
+        
+        user_prompt = get_prompt("meeting_create_protocol_user", fallback="Внимательно изучи {{source_type}} и {{action_type}} НА РУССКОМ ЯЗЫКЕ:\n\n{{text}}")
+        user_text = user_prompt.replace("{{text}}", transcription)\
+                               .replace("{{source_type}}", "расшифровку")\
+                               .replace("{{action_type}}", "составь подробный протокол")
+
         messages = [
             {"role": "system", "text": system_text},
-            {"role": "user", "text": f"Внимательно изучи расшифровку и составь подробный протокол НА РУССКОМ ЯЗЫКЕ:\n\n{transcription}"}
+            {"role": "user", "text": user_text}
         ]
         prompt = {
             "modelUri": f"gpt://{self.folder_id}/{self.gpt_model}",
@@ -282,7 +290,7 @@ class YandexProvider(BaseAIProvider):
 
     async def verify_protocol(self, transcription: str, protocol: str) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
-        system_text = (
+        fallback_system = (
             "Ты — строгий корпоративный аудитор. Твоя задача: Сравнить РАСШИФРОВКУ и готовый ПРОТОКОЛ.\n"
             "ОБЯЗАТЕЛЬНО пиши отчет ТОЛЬКО НА РУССКОМ ЯЗЫКЕ.\n"
             "Найди любые расхождения, пропущенные поручения или фактические ошибки.\n"
@@ -302,9 +310,14 @@ class YandexProvider(BaseAIProvider):
             "}\n"
             "```"
         )
+        system_text = get_prompt("meeting_verify_protocol", fallback=fallback_system)
+        
+        user_prompt = get_prompt("meeting_verify_protocol_user", fallback="РАСШИФРОВКА:\n{{transcription}}\n\nПРОТОКОЛ:\n{{protocol}}")
+        user_text = user_prompt.replace("{{transcription}}", transcription).replace("{{protocol}}", protocol)
+
         messages = [
             {"role": "system", "text": system_text},
-            {"role": "user", "text": f"РАСШИФРОВКА:\n{transcription}\n\nПРОТОКОЛ:\n{protocol}"}
+            {"role": "user", "text": user_text}
         ]
         prompt = {
             "modelUri": f"gpt://{self.folder_id}/{self.gpt_model}",
@@ -349,7 +362,7 @@ class YandexProvider(BaseAIProvider):
 
     async def format_transcript_with_ai(self, transcription: str) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
-        system_text = (
+        fallback_system = (
             "Ты — эксперт по лингвистическому анализу диалогов. Твоя задача: превратить сплошной текст расшифровки в структурированный диалог.\n\n"
             "ПРАВИЛА:\n"
             "1. Распознавай смену спикеров по смыслу, вопросам и реакции. \n"
@@ -363,9 +376,14 @@ class YandexProvider(BaseAIProvider):
             "Участник 2: Хорошо. А у тебя?\n"
             "Участник 1: Тоже отлично. Что нового?"
         )
+        system_text = get_prompt("meeting_humanize_speakers", fallback=fallback_system)
+        
+        user_prompt = get_prompt("meeting_humanize_speakers_user", fallback="РАСШИФРОВКА (сплошной текст):\n{{transcription}}")
+        user_text = user_prompt.replace("{{transcription}}", transcription)
+
         messages = [
             {"role": "system", "text": system_text},
-            {"role": "user", "text": f"РАСШИФРОВКА (сплошной текст):\n{transcription}"}
+            {"role": "user", "text": user_text}
         ]
         prompt = {
             "modelUri": f"gpt://{self.folder_id}/{self.gpt_model}",

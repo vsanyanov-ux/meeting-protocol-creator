@@ -407,11 +407,12 @@ async def process_meeting(
     provider: str = Form(None),
     existing_file_id: str = Form(None),
     force_cpu: bool = Form(False),
-    diarize: bool = Form(False)
+    diarize: bool = Form(False),
+    session_id: str = Form(None)
 ):
     """Main endpoint to upload audio and trigger the protocol creation flow."""
     file_id = existing_file_id or str(uuid.uuid4())
-    logger.info(f"Processing request: file_id={file_id}, email={email}, provider={provider}, diarize={diarize}, has_file={file is not None}")
+    logger.info(f"Processing request: file_id={file_id}, session_id={session_id}, email={email}, provider={provider}, diarize={diarize}, has_file={file is not None}")
     local_path = None
     extension = None
     
@@ -515,7 +516,7 @@ async def process_meeting(
 
     # 4. Trigger processing in background ONLY IF NOT ALREADY PROCESSING
     if not existing_status or existing_status.get("status") in ["error", "failed", "completed"]:
-        background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu, diarize)
+        background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu, diarize, session_id)
         background_tasks.add_task(cleanup_old_files)
     else:
         logger.info(f"Pipeline for {file_id} is already running. Skipping redundant task trigger.")
@@ -526,7 +527,7 @@ async def process_meeting(
         "message": "Audio is being transcribed and processed."
     }
 
-async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None, recipient_email: str = None, provider_type: str = None, force_cpu: bool = False, diarize: bool = False):
+async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None, recipient_email: str = None, provider_type: str = None, force_cpu: bool = False, diarize: bool = False, session_id: str = None):
     """Full pipeline: S3 Upload (optional) -> STT -> GPT -> DOCX -> Email (optional)."""
     import traceback
     
@@ -540,7 +541,8 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
             file_id=file_id,
             filename=os.path.basename(local_path),
             provider=current_provider.name,
-            metadata=metadata
+            metadata=metadata,
+            session_id=session_id
         ) as trace:
 
             status_manager.update(file_id, {"status": "starting", "message": "Queued. Waiting for an available processing slot..."})
@@ -695,8 +697,6 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                         input_tokens=verify_res["input_tokens"],
                         output_tokens=verify_res["output_tokens"]
                     )
-                    # Add Auditor's report to the protocol text so it appears in the DOCX
-                    protocol_text += f"\n\n## ОТЧЕТ AI-АУДИТОРА\n{verify_res['verification_report']}"
                     
                     # --- Langfuse: отправляем автоматические оценки от Аудитора ---
                     if "scores" in verify_res and verify_res["scores"]:
