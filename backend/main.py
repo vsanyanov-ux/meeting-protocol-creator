@@ -17,6 +17,7 @@ import uuid
 import subprocess
 import time
 import asyncio
+import json
 import magic
 from contextlib import asynccontextmanager
 from loguru import logger
@@ -39,10 +40,43 @@ logger.remove()
 logger.add(sys.stdout, colorize=True, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>", enqueue=True)
 logger.add("logs/app.log", rotation="10 MB", retention="10 days", compression="zip", format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}", level="INFO", encoding="utf-8")
 
+# --- Cross-process Resource Locking ---
+class GPULock:
+    """Simple file-based spin-lock to coordinate GPU usage across multiple workers."""
+    def __init__(self, lock_file: str = "storage/gpu.lock"):
+        self.lock_file = lock_file
+
+    async def __aenter__(self):
+        while True:
+            try:
+                # Atomic file creation
+                fd = os.open(self.lock_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.write(fd, str(time.time()).encode())
+                os.close(fd)
+                logger.info("GPU lock acquired by worker")
+                return self
+            except FileExistsError:
+                # Check for stale lock (older than 1 hour)
+                try:
+                    if time.time() - os.path.getmtime(self.lock_file) > 3600:
+                        os.remove(self.lock_file)
+                        logger.warning("Released stale GPU lock")
+                        continue
+                except: pass
+                await asyncio.sleep(2)
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if os.path.exists(self.lock_file):
+                os.remove(self.lock_file)
+                logger.info("GPU lock released by worker")
+        except: pass
+
 # --- Resource Limits ---
-MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", 2))
+MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", 1))
 processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
-logger.info(f"Initialized with MAX_CONCURRENT_TASKS = {MAX_CONCURRENT_TASKS}")
+gpu_lock = GPULock()
+logger.info(f"Initialized with MAX_CONCURRENT_TASKS = {MAX_CONCURRENT_TASKS} (per worker)")
 
 
 # --- CUDA DLL Setup for Windows ---
@@ -94,7 +128,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Протоколист API",
-    version="4.1.0",
+    version="4.2.0",
     lifespan=lifespan
 )
 
@@ -167,8 +201,59 @@ for d in [UPLOAD_DIR, PROTOCOLS_DIR]:
     if not os.path.exists(d):
         os.makedirs(d)
 
-# Simple in-memory status tracking
-processing_status = {}
+# --- Persistent Status Management ---
+class StatusManager:
+    def __init__(self, storage_dir: str = "storage"):
+        self.storage_dir = storage_dir
+        if not os.path.exists(self.storage_dir):
+            os.makedirs(self.storage_dir)
+
+    def _get_path(self, file_id: str):
+        return os.path.join(self.storage_dir, f"status_{file_id}.json")
+
+    def get(self, file_id: str) -> Dict[str, Any]:
+        path = self._get_path(file_id)
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Error reading status for {file_id}: {e}")
+            return {}
+
+    def set(self, file_id: str, status: Dict[str, Any]):
+        path = self._get_path(file_id)
+        temp_path = path + ".tmp"
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(status, f, ensure_ascii=False, indent=2)
+            # Atomic replacement: prevents reading partial or locked files
+            os.replace(temp_path, path)
+        except Exception as e:
+            logger.error(f"Error writing status for {file_id}: {e}")
+            if os.path.exists(temp_path):
+                try: os.remove(temp_path)
+                except: pass
+
+    def update(self, file_id: str, data: Dict[str, Any]):
+        status = self.get(file_id)
+        status.update(data)
+        self.set(file_id, status)
+
+    def get_all_active_count(self) -> int:
+        count = 0
+        try:
+            for filename in os.listdir(self.storage_dir):
+                if filename.startswith("status_"):
+                    status = self.get(filename.replace("status_", "").replace(".json", ""))
+                    if status.get("status") not in ["completed", "failed", "error"]:
+                        count += 1
+        except Exception:
+            pass
+        return count
+
+status_manager = StatusManager()
 
 # --- Security: Validate required env vars on startup ---
 @app.get("/health")
@@ -178,7 +263,7 @@ async def health_check():
     return {
         "status": "healthy",
         "timestamp": time.time(),
-        "tasks_in_queue": len(processing_status) - sum(1 for s in processing_status.values() if s.get("status") in ["completed", "failed"])
+        "tasks_in_queue": status_manager.get_all_active_count()
     }
 
 @app.get("/info")
@@ -211,7 +296,7 @@ async def root():
 @app.get("/status/{file_id}")
 async def get_status(file_id: str):
     """Check the status of a specific processing task."""
-    status = processing_status.get(file_id)
+    status = status_manager.get(file_id)
     if not status:
         raise HTTPException(status_code=404, detail="Processing task not found")
     
@@ -227,7 +312,7 @@ async def get_status(file_id: str):
 @app.get("/download/{file_id}")
 async def download_protocol(file_id: str):
     """Download the generated DOCX file."""
-    status = processing_status.get(file_id)
+    status = status_manager.get(file_id)
     if not status:
         raise HTTPException(status_code=404, detail="File ID not found")
     
@@ -263,7 +348,7 @@ async def submit_feedback(file_id: str, body: FeedbackRequest):
     Отправить оценку качества протокола в Langfuse.
     score_name может быть: 'user_rating', 'protocol_completeness', 'formatting_quality'
     """
-    status = processing_status.get(file_id)
+    status = status_manager.get(file_id)
     if not status:
         raise HTTPException(status_code=404, detail="Запись не найдена")
 
@@ -393,14 +478,20 @@ async def process_meeting(
     else:
         mime_type = "reused-file"
     
-    # Initialize status with placeholders to avoid missing keys in frontend
-    processing_status[file_id] = {
-        "status": "starting", 
-        "message": "File uploaded successfully",
-        "transcription": None,
-        "verification_report": None,
-        "docx_path": None
-    }
+    # 2.2 Initialize status ONLY if it's a new task or previously failed
+    existing_status = status_manager.get(file_id)
+    if not existing_status or existing_status.get("status") in ["error", "failed"]:
+        logger.info(f"Initializing new status for file_id: {file_id}")
+        status_manager.set(file_id, {
+            "status": "starting", 
+            "message": "File uploaded successfully",
+            "filename": file.filename if file else f"Retried-{file_id}",
+            "transcription": None,
+            "verification_report": None,
+            "docx_path": None
+        })
+    else:
+        logger.info(f"Re-using existing status for file_id: {file_id} (current status: {existing_status.get('status')})")
     
     # 3. Collect metadata for Langfuse
     file_size = os.path.getsize(local_path)
@@ -412,9 +503,12 @@ async def process_meeting(
         "force_cpu": force_cpu
     }
 
-    # 4. Trigger processing in background
-    background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu)
-    background_tasks.add_task(cleanup_old_files)
+    # 4. Trigger processing in background ONLY IF NOT ALREADY PROCESSING
+    if not existing_status or existing_status.get("status") in ["error", "failed", "completed"]:
+        background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu)
+        background_tasks.add_task(cleanup_old_files)
+    else:
+        logger.info(f"Pipeline for {file_id} is already running. Skipping redundant task trigger.")
     
     return {
         "status": "processing",
@@ -439,11 +533,12 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
             metadata=metadata
         ) as trace:
 
-            processing_status[file_id].update({"status": "starting", "message": "Queued. Waiting for an available processing slot..."})
+            status_manager.update(file_id, {"status": "starting", "message": "Queued. Waiting for an available processing slot..."})
             
-            async with processing_semaphore:
-                # 1. Normalization Step
-                processing_status[file_id].update({"status": "starting", "message": "Normalizing uploaded file..."})
+            async with gpu_lock:
+                async with processing_semaphore:
+                    # 1. Normalization Step
+                    status_manager.update(file_id, {"status": "starting", "message": "Normalizing uploaded file..."})
                 trace.start_span("normalization")
                 
                 try:
@@ -456,19 +551,19 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                     raise e
 
                 if norm_res["type"] == "error":
-                    processing_status[file_id].update({"status": "error", "message": norm_res["error"]})
+                    status_manager.update(file_id, {"status": "error", "message": norm_res["error"]})
                     trace.finish("error", {"stage": "normalization", "reason": norm_res["error"]})
                     return
 
                 transcription = None
 
                 if norm_res["type"] == "text":
-                    processing_status[file_id].update({"status": "transcribing", "message": "Text document detected. Bypassing audio transcription..."})
+                    status_manager.update(file_id, {"status": "transcribing", "message": "Text document detected. Bypassing audio transcription..."})
                     transcription = norm_res["content"]
                     
                 elif norm_res["type"] == "audio":
                     def status_updater(status: str, msg: str):
-                        processing_status[file_id].update({"status": status, "message": msg})
+                        status_manager.update(file_id, {"status": status, "message": msg})
                     
                     try:
                         transcription = await current_provider.transcribe_audio(
@@ -514,19 +609,19 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                         raise e
                     
                 if not transcription:
-                    processing_status[file_id].update({"status": "error", "message": "Transcription failed. Please check your audio file and API keys."})
+                    status_manager.update(file_id, {"status": "error", "message": "Transcription failed. Please check your audio file and API keys."})
                     trace.finish("error", {"stage": "transcription", "reason": "empty_result"})
                     return
 
                 # Store transcription for manual review
-                processing_status[file_id]["transcription"] = transcription
+                status_manager.update(file_id, {"transcription": transcription})
 
                 # C. Create Protocol via Provider's GPT
-                processing_status[file_id].update({"status": "generating", "message": "Analyzing meeting content and generating protocol..."})
+                status_manager.update(file_id, {"status": "generating", "message": "Analyzing meeting content and generating protocol..."})
                 
                 try:
                     trace.start_span("Create Protocol")
-                    gpt_result = await current_provider.create_protocol(transcription)
+                    gpt_result = await current_provider.create_protocol(transcription, status_updater=status_updater, file_id=file_id)
                     protocol_text = gpt_result["text"]
 
                     # --- Langfuse: логируем LLM-вызов как Generation ---
@@ -547,16 +642,16 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                     raise e
 
                 if not protocol_text:
-                    processing_status[file_id] = {"status": "error", "message": "Protocol generation failed"}
+                    status_manager.set(file_id, {"status": "error", "message": "Protocol generation failed"})
                     trace.finish("error", {"stage": "gpt", "reason": "empty_result"})
                     return
 
                 # C2. Automated Verification Step (Self-Critique)
-                processing_status[file_id].update({"status": "verifying", "message": "AI-Auditor is verifying protocol accuracy..."})
+                status_manager.update(file_id, {"status": "verifying", "message": "AI-Auditor is verifying protocol accuracy..."})
                 
                 try:
                     verify_res = await current_provider.verify_protocol(transcription, protocol_text)
-                    processing_status[file_id]["verification_report"] = verify_res["verification_report"]
+                    status_manager.update(file_id, {"verification_report": verify_res["verification_report"]})
                     
                     # Log verification to Langfuse as a separate generation
                     trace.log_generation(
@@ -596,7 +691,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                 # E. Send Email (Skip if no SMTP configured)
                 smtp_user = os.getenv("SMTP_USER")
                 if smtp_user:
-                    processing_status[file_id].update({"status": "emailing", "message": "Sending protocol to your email..."})
+                    status_manager.update(file_id, {"status": "emailing", "message": "Sending protocol to your email..."})
                     trace.start_span("email_send")
                     # Recipient logic: 1. Passed manually, 2. Env var, 3. Default hardcoded
                     recipient = recipient_email or os.getenv("RECIPIENT_EMAIL", "vanyanov@yandex.ru")
@@ -617,7 +712,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                         success = False
 
                     if success:
-                        processing_status[file_id].update({
+                        status_manager.update(file_id, {
                             "status": "completed", 
                             "message": "Success! The protocol has been sent to your email.",
                             "docx_path": docx_path
@@ -625,14 +720,14 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                         trace.finish("completed", {"docx_path": docx_path, "email_sent": True})
                     else:
                         # IMPORTANT: Even if email fails, we mark as completed so user can download in UI
-                        processing_status[file_id].update({
+                        status_manager.update(file_id, {
                             "status": "completed", 
                             "message": "Protocol is ready! (Note: Email delivery failed, please download it here).",
                             "docx_path": docx_path
                         })
                         trace.finish("completed_with_email_error", {"docx_path": docx_path, "email_sent": False})
                 else:
-                    processing_status[file_id].update({
+                    status_manager.update(file_id, {
                         "status": "completed", 
                         "message": f"Success! Protocol generated at {docx_path} (Email skipped, SMTP not configured).",
                         "docx_path": docx_path
@@ -646,10 +741,12 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
 
     except Exception as e:
         logger.error(f"Pipeline error for {file_id}: {e}")
-        processing_status[file_id].update({"status": "error", "message": f"An unexpected error occurred: {str(e)}"})
+        status_manager.update(file_id, {"status": "error", "message": f"An unexpected error occurred: {str(e)}"})
     finally:
         pass
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # Use 2 workers for better responsiveness (one for processing, one for heartbeats)
+    # Note: On Windows, workers=N requires app to be passed as a string
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, workers=2)

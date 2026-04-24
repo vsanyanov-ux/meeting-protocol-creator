@@ -126,6 +126,11 @@ def generate_docx(content: str) -> str:
         if not line_stripped:
             continue
 
+        # 1. Skip "Краткий отчет" header (case-insensitive, ignores markdown)
+        clean_text_for_skip = re.sub(r"[\*#_]+", "", line_stripped).strip()
+        if re.search(r"^краткий отчет$", clean_text_for_skip, re.IGNORECASE):
+            continue
+
         # Table detection
         if line_stripped.startswith('|') and line_stripped.endswith('|'):
             if re.match(r"^[|\-\s:]+$", line_stripped):
@@ -152,15 +157,25 @@ def generate_docx(content: str) -> str:
             run_h.font.color.rgb = RGBColor(0, 51, 102)
             continue
         
-        # Label detection
-        match_label = re.match(r"^([\w\sа-яА-ЯёЁ]+[:–])(.*)$", line_stripped)
+        # Label / Subheading detection
+        # This matches items like "Topic:", "**Topic:**", "Title –"
+        # We extract the text, remove the separator (colon/dash), and style it.
+        match_label = re.match(r"^(\**)([\w\sа-яА-ЯёЁ\(\)\.]+)([:–])(\**)\s*(.*)$", line_stripped)
         if match_label:
+            label_text = match_label.group(2).strip()
+            remaining_text = match_label.group(5).strip()
+            
             p = doc.add_paragraph()
-            run_lbl = p.add_run(match_label.group(1))
+            run_lbl = p.add_run(label_text)
             run_lbl.bold = True
-            run_lbl.font.size = Pt(12)
-            p.add_run(match_label.group(2))
+            run_lbl.font.size = Pt(13)
+            run_lbl.font.name = 'Times New Roman'
+            
+            if remaining_text:
+                # Add the rest of the text on the same line if present
+                p.add_run(" " + remaining_text)
         else:
+            # Regular paragraph text (clean up markdown bolding)
             p_text = re.sub(r"\*\*(.*?)\*\*", r"\1", line_stripped)
             p_text = p_text.replace("__", "").strip()
             if p_text:

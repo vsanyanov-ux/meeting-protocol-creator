@@ -20,7 +20,7 @@ class LocalProvider(BaseAIProvider):
     def __init__(self, 
                  whisper_model_size: str = "medium", 
                  ollama_url: str = "http://127.0.0.1:11434",
-                 ollama_model: str = "qwen3.5:9b",
+                 ollama_model: str = "qwen2.5:latest",
                  device: Optional[str] = None):
         self.whisper_model_size = whisper_model_size
         self.ollama_url = ollama_url
@@ -37,9 +37,21 @@ class LocalProvider(BaseAIProvider):
                 self.device = env_device
             else:
                 self.device = "cuda" if self._has_gpu() else "cpu"
+
+        # Log specific GPU info if using CUDA
+        if self.device == "cuda":
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    gpu_name = torch.cuda.get_device_name(0)
+                    vram = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+                    logger.info(f"--- CUDA DEVICE DETECTED: {gpu_name} ({vram:.1f} GB) ---")
+                else:
+                    logger.warning("--- CUDA requested but torch.cuda.is_available() is False! ---")
+            except Exception as e:
+                logger.warning(f"Could not get GPU info: {e}")
             
         # use int8_float16 for stability and speed on RTX cards
-        # BUT if we are on CPU, we MUST use int8 or float32
         self.compute_type = "int8_float16" if self.device == "cuda" else "int8"
         
         logger.info(f"Initialized LocalProvider with Whisper ({whisper_model_size}, {self.device}, {self.compute_type}) and Ollama ({ollama_model})")
@@ -140,9 +152,9 @@ class LocalProvider(BaseAIProvider):
         trace: Any
     ) -> Optional[str]:
         # WITH 12GB VRAM, WE DON'T NEED TO UNLOAD MODELS SEQUENTIALLY
-        # if self.device == "cuda":
-        #     await self._unload_ollama_models()
-        #     await self._cleanup_memory()
+        if self.device == "cuda":
+            await self._unload_ollama_models()
+            await self._cleanup_memory()
             
         status_updater("transcribing", f"Loading Whisper ({self.whisper_model_size})...")
         
@@ -170,23 +182,14 @@ class LocalProvider(BaseAIProvider):
                 if i % 10 == 0 and i > 0:
                     logger.info(f"Processed {i} segments...")
                 
-            transcription = " ".join(full_text).strip()
+            transcription = "\n".join(full_text).strip()
             duration_sec = info.duration
             latency_sec = time.time() - t_start
             
-            # WITH 9B+ MODELS, WE MUST UNLOAD AFTER EVERY SESSION TO FREE VRAM FOR OLLAMA
-            await self._cleanup_memory()
-            
-            # --- MEMORY STABILITY WAIT ---
-            # Wait 2 seconds for GPU driver to settle
-            await asyncio.sleep(2)
-            
-            trace.end_span("transcription", {
-                "duration_sec": duration_sec,
-                "latency_sec": latency_sec,
-                "segments": len(segments),
-                "language": info.language
-            })
+            # Free VRAM for Ollama
+            # Temporarily disabled to diagnose crash on exit
+            # await self._cleanup_memory()
+            # await asyncio.sleep(2)
             
             return transcription
         except Exception as e:
@@ -198,8 +201,7 @@ class LocalProvider(BaseAIProvider):
             if self.device == "cuda" and ("cuda" in error_str or "nvidia" in error_str or "out of memory" in error_str):
                 logger.critical(f"GPU failure detected: {e}")
                 raise HardwareError(f"Graphics card error: {str(e)}", device="cuda")
-            
-            return None
+            raise e
 
     async def _ensure_model_exists(self, client: ollama.Client):
         if self._model_verified:
@@ -267,14 +269,138 @@ class LocalProvider(BaseAIProvider):
         
         return result
 
-    async def create_protocol(self, transcription: str) -> Dict[str, Any]:
+    def _chunk_text(self, text: str, max_chars: int = 15000) -> List[str]:
+        """Splits long text into manageable chunks, handling both lines and long blocks."""
+        if len(text) <= max_chars:
+            return [text]
+            
+        chunks = []
+        lines = text.splitlines(keepends=True)
+        current_chunk = []
+        current_length = 0
+        
+        for line in lines:
+            # If a single line is too long, we must split it by characters
+            if len(line) > max_chars:
+                # First, flush current chunk if not empty
+                if current_chunk:
+                    chunks.append("".join(current_chunk))
+                    current_chunk = []
+                    current_length = 0
+                
+                # Split the long line into pieces
+                for j in range(0, len(line), max_chars):
+                    chunks.append(line[j : j + max_chars])
+                continue
+
+            if current_length + len(line) > max_chars and current_chunk:
+                chunks.append("".join(current_chunk))
+                current_chunk = []
+                current_length = 0
+            
+            current_chunk.append(line)
+            current_length += len(line)
+            
+        if current_chunk:
+            chunks.append("".join(current_chunk))
+            
+        return chunks
+
+    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None) -> Dict[str, Any]:
+        # Define the threshold for chunking (approx 15k chars)
+        CHUNK_THRESHOLD = 15000
+        
+        if len(transcription) <= CHUNK_THRESHOLD:
+            # Original logic for short texts
+            return await self._create_protocol_single(transcription)
+        else:
+            # --- PERSISTENCE LOGIC ---
+            logger.info(f"LONG TRANSCRIPT DETECTED ({len(transcription)} chars). Using chunked processing...")
+            chunks = self._chunk_text(transcription, max_chars=CHUNK_THRESHOLD)
+            storage_dir = "storage"
+            if not os.path.exists(storage_dir):
+                os.makedirs(storage_dir)
+            
+            storage_path = os.path.join(storage_dir, f"summaries_{file_id}.json") if file_id else None
+            
+            partial_summaries = []
+            start_index = 0
+            
+            # Load existing progress if available
+            if storage_path and os.path.exists(storage_path):
+                try:
+                    with open(storage_path, "r", encoding="utf-8") as f:
+                        saved_data = json.load(f)
+                        if saved_data.get("chunks_count") == len(chunks):
+                            partial_summaries = saved_data.get("summaries", [])
+                            start_index = len(partial_summaries)
+                            logger.info(f"RESUMING processing from chunk {start_index + 1}/{len(chunks)}")
+                except Exception as e:
+                    logger.warning(f"Failed to load persistence data: {e}")
+            
+            for i in range(start_index, len(chunks)):
+                chunk = chunks[i]
+                logger.info(f"Processing chunk {i+1}/{len(chunks)}...")
+                if status_updater:
+                    status_updater("summarizing", f"Анализ части {i+1} из {len(chunks)}...")
+                
+                summary_part = await self._summarize_chunk(chunk, i+1, len(chunks))
+                partial_summaries.append(summary_part)
+                
+                # Save progress after each chunk
+                if storage_path:
+                    try:
+                        with open(storage_path, "w", encoding="utf-8") as f:
+                            json.dump({
+                                "chunks_count": len(chunks),
+                                "summaries": partial_summaries,
+                                "timestamp": time.time()
+                            }, f, ensure_ascii=False, indent=2)
+                    except Exception as e:
+                        logger.warning(f"Failed to save persistence data: {e}")
+                
+            combined_context = "\n\n=== ЧАСТЬ ПРОТОКОЛА ===\n".join(partial_summaries)
+            logger.info("Generating final consolidated protocol from partial summaries...")
+            if status_updater:
+                status_updater("summarizing", "Формирование финального протокола...")
+            
+            result = await self._create_protocol_single(combined_context, is_consolidated=True)
+            
+            # Clean up storage on successful completion
+            if storage_path and os.path.exists(storage_path):
+                try:
+                    os.remove(storage_path)
+                    logger.info(f"Cleaned up persistence file: {storage_path}")
+                except: pass
+                
+            return result
+
+    async def _summarize_chunk(self, chunk: str, index: int, total: int) -> str:
+        """Summarizes a single chunk of transcription into key points."""
         system_text = (
-            "Ты — ведущий эксперт по техническому документообороту и промышленному инжинирингу. Твоя задача — составить официальный протокол совещания на основе расшифровки.\n\n"
+            "Ты — профессиональный секретарь. Твоя задача — выделить все важные факты, решения и поручения "
+            f"из части {index} (из {total}) транскрипции совещания. Пиши на РУССКОМ ЯЗЫКЕ.\n"
+            "Стиль: максимально плотный, тезисный, без вступлений. Сохраняй все фамилии и цифры."
+        )
+        messages = [
+            {"role": "system", "content": system_text},
+            {"role": "user", "content": f"ВЫДЕЛИ ГЛАВНОЕ ИЗ ЭТОЙ ЧАСТИ РАСШИФРОВКИ:\n\n{chunk}"}
+        ]
+        res = await self._call_ollama(messages, temperature=0.1)
+        return res.get("text", "Ошибка обработки части.")
+
+    async def _create_protocol_single(self, text: str, is_consolidated: bool = False) -> Dict[str, Any]:
+        """Standard protocol generation for a single block of text (or consolidated summaries)."""
+        prompt_prefix = "составь подробный протокол" if not is_consolidated else "составь ФИНАЛЬНЫЙ СВОДНЫЙ протокол на основе этих тезисов"
+        
+        system_text = (
+            "Ты — ведущий эксперт по техническому документообороту и промышленному инжинирингу. Твоя задача — составить официальный протокол совещания на основе " + 
+            ("тезисов разных частей обсуждения.\n\n" if is_consolidated else "расшифровки.\n\n") +
             "ОБЯЗАТЕЛЬНЫЕ ТРЕБОВАНИЯ:\n"
-            "1. ЯЗЫК: ВЕСЬ ответ должен быть СТРОГО на РУССКОМ языке. Использование английского языка ЗАПРЕЩЕНО (кроме технических кодов и брендов).\n"
-            "2. СОХРАННОСТЬ ДАННЫХ: Обязательно сохраняй технические маркировки, артикулы, названия сплавов, коды изделий (например: марки стали 08Х18Н10Т, ГОСТы, чертежи).\n"
+            "1. ЯЗЫК: ВЕСЬ ответ должен быть СТРОГО на РУССКОМ языке. Использование английского языка ЗАПРЕЩЕНО.\n"
+            "2. СОХРАННОСТЬ ДАННЫХ: Обязательно сохраняй технические маркировки, артикулы, названия сплавов, коды изделий.\n"
             "3. ТОЧНОСТЬ: Будь точен в числовых параметрах и единицах измерения.\n"
-            "4. ТАБЛИЦА ПОРУЧЕНИЙ: Секцию 'Принятые решения и Поручения' ОБЯЗАТЕЛЬНО оформляй в виде Markdown-таблицы. ЗАПРЕЩЕНО использовать списки для задач.\n\n"
+            "4. ТАБЛИЦА ПОРУЧЕНИЙ: Секцию 'Принятые решения и Поручения' ОБЯЗАТЕЛЬНО оформляй в виде Markdown-таблицы.\n\n"
             "СТРУКТУРА ОТВЕТА:\n"
             "## Общая информация\n"
             "## Участники\n"
@@ -282,17 +408,16 @@ class LocalProvider(BaseAIProvider):
             "## Ход обсуждения\n"
             "## Принятые решения и Поручения\n"
             "| № | Поручение | Ответственный | Срок исполнения |\n"
-            "|---|-----------|---------------|------------------|\n"
-            "| 1 | Описание задачи | Фамилия И.О. | ДД.ММ.ГГГГ или статус |\n\n"
+            "|---|-----------|---------------|------------------|\n\n"
             "## Нерешенные вопросы\n\n"
             "ПИШИ ТОЛЬКО НА РУССКОМ. БУДЬ ЛАКОНИЧНЫМ И СТРОГИМ."
         )
         messages = [
             {"role": "system", "content": system_text},
-            {"role": "user", "content": f"Внимательно изучи расшифровку и составь подробный протокол НА РУССКОМ ЯЗЫКЕ:\n\n{transcription}"}
+            {"role": "user", "content": f"Внимательно изучи {'тезисы' if is_consolidated else 'расшифровку'} и {prompt_prefix} НА РУССКОМ ЯЗЫКЕ:\n\n{text}"}
         ]
         
-        logger.info(f"--- PROTOCOL GENERATION START: {len(transcription)} chars (~{len(transcription)//4} tokens) ---")
+        logger.info(f"--- FINAL PROTOCOL GENERATION START: {len(text)} chars ---")
         return await self._call_ollama(messages, temperature=0.2)
 
     async def verify_protocol(self, transcription: str, protocol: str) -> Dict[str, Any]:
