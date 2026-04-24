@@ -128,11 +128,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Протоколист API",
-<<<<<<< HEAD
     version="4.2.1",
-=======
-    version="4.2.0",
->>>>>>> feature/diarization-isolation
     lifespan=lifespan
 )
 
