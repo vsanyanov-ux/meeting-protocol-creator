@@ -57,7 +57,8 @@ class YandexProvider(BaseAIProvider):
         audio_path: str, 
         file_id: str, 
         status_updater: Callable[[str, str], None],
-        trace: Any
+        trace: Any,
+        diarize: bool = False
     ) -> Optional[str]:
         # Get duration for STT pricing (Langfuse)
         duration_sec = await self._get_audio_duration(audio_path)

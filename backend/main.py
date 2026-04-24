@@ -128,7 +128,11 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Протоколист API",
+<<<<<<< HEAD
     version="4.2.1",
+=======
+    version="4.2.0",
+>>>>>>> feature/diarization-isolation
     lifespan=lifespan
 )
 
@@ -250,9 +254,7 @@ class StatusManager:
     def update(self, file_id: str, data: Dict[str, Any]):
         status = self.get(file_id)
         if not status and data.get("status") != "starting":
-            # Don't create a partial status if it was supposed to exist
             return
-            
         status.update(data)
         self.set(file_id, status)
 
@@ -408,7 +410,8 @@ async def process_meeting(
     email: str = Form(None),
     provider: str = Form(None),
     existing_file_id: str = Form(None),
-    force_cpu: bool = Form(False)
+    force_cpu: bool = Form(False),
+    diarize: bool = Form(False)
 ):
     """Main endpoint to upload audio and trigger the protocol creation flow."""
     file_id = existing_file_id or str(uuid.uuid4())
@@ -516,7 +519,7 @@ async def process_meeting(
 
     # 4. Trigger processing in background ONLY IF NOT ALREADY PROCESSING
     if not existing_status or existing_status.get("status") in ["error", "failed", "completed"]:
-        background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu)
+        background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu, diarize)
         background_tasks.add_task(cleanup_old_files)
     else:
         logger.info(f"Pipeline for {file_id} is already running. Skipping redundant task trigger.")
@@ -527,7 +530,7 @@ async def process_meeting(
         "message": "Audio is being transcribed and processed."
     }
 
-async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None, recipient_email: str = None, provider_type: str = None, force_cpu: bool = False):
+async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None, recipient_email: str = None, provider_type: str = None, force_cpu: bool = False, diarize: bool = False):
     """Full pipeline: S3 Upload (optional) -> STT -> GPT -> DOCX -> Email (optional)."""
     import traceback
     
@@ -581,7 +584,8 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                             audio_path=norm_res["path"], 
                             file_id=file_id, 
                             status_updater=status_updater, 
-                            trace=trace
+                            trace=trace,
+                            diarize=diarize
                         )
                     except HardwareError as he:
                         logger.warning(f"GPU FAILURE: {he}. Attempting automatic fallback to CPU...")
@@ -595,7 +599,8 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                                 audio_path=norm_res["path"], 
                                 file_id=file_id, 
                                 status_updater=status_updater, 
-                                trace=trace
+                                trace=trace,
+                                diarize=diarize
                             )
                         except Exception as cpu_error:
                             logger.error(f"CPU Fallback also failed: {cpu_error}")
@@ -626,6 +631,27 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
 
                 # Store transcription for manual review
                 status_manager.update(file_id, {"transcription": transcription})
+                # B2. Speaker Humanization Stage (Semantic Diarization)
+                if diarize:
+                    status_manager.update(file_id, {"status": "diarizing", "message": "Ollama is identifying speaker names from context..."})
+                    try:
+                        trace.start_span("speaker_humanization")
+                        format_res = await current_provider.format_transcript_with_ai(transcription)
+                        transcription = format_res["formatted_text"]
+                        
+                        # Log humanization to Langfuse
+                        trace.log_generation(
+                            input_messages=[{"role": "user", "content": "Humanize speakers"}],
+                            output_text=transcription,
+                            model=f"{current_provider.model_name}_humanizer",
+                            input_tokens=format_res["input_tokens"],
+                            output_tokens=format_res["output_tokens"]
+                        )
+                        trace.end_span("speaker_humanization", {"success": True})
+                        status_manager.update(file_id, {"transcription": transcription})
+                    except Exception as e:
+                        logger.warning(f"Speaker humanization failed: {e}")
+                        trace.log_error("speaker_humanization", str(e))
 
                 # C. Create Protocol via Provider's GPT
                 status_manager.update(file_id, {"status": "generating", "message": "Analyzing meeting content and generating protocol..."})
