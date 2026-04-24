@@ -24,6 +24,4 @@ nvidia-cuda-runtime-cu12
 torch
 torchvision
 torchaudio
-pyannote.audio==3.3.1
-speechbrain==1.0.1
 

@@ -1,19 +1,39 @@
-import traceback
-import sys
+import subprocess
 import os
+import sys
+import time
 
-print("--- DEBUG RUNNER STARTING ---")
-try:
-    from main import app
-    import uvicorn
-    print("Dependencies loaded, starting uvicorn...")
-    uvicorn.run(app, host='0.0.0.0', port=8000, log_level="debug")
-except Exception as e:
-    print("!!! CRITICAL CRASH DETECTED !!!")
-    with open("crash_report.txt", "w", encoding='utf-8') as f:
-        f.write(f"Timestamp: {os.times()}\n")
-        f.write(traceback.format_exc())
-    traceback.print_exc()
-    sys.exit(1)
-finally:
-    print("--- DEBUG RUNNER EXITED ---")
+def kill_port_8000():
+    try:
+        # Windows command to find and kill process on port 8000
+        output = subprocess.check_output('netstat -ano | findstr :8000', shell=True).decode()
+        for line in output.strip().split('\n'):
+            parts = line.split()
+            if len(parts) > 4:
+                pid = parts[-1]
+                print(f"Killing process {pid} on port 8000...")
+                subprocess.run(f"taskkill /F /PID {pid}", shell=True)
+    except Exception:
+        pass
+
+def run_server():
+    print("--- DEBUG RUNNER STARTING ---")
+    kill_port_8000()
+    
+    # Run main.py directly
+    cmd = [sys.executable, "main.py"]
+    
+    try:
+        process = subprocess.Popen(cmd)
+        print(f"Server started with PID {process.pid}")
+        process.wait()
+    except KeyboardInterrupt:
+        print("\nStopping server...")
+        process.terminate()
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        print("--- DEBUG RUNNER EXITED ---")
+
+if __name__ == "__main__":
+    run_server()

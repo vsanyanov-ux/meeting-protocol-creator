@@ -46,9 +46,4 @@ export const getSystemInfo = async () => {
   return response.data;
 };
 
-export const getResults = async (fileId) => {
-  const response = await api.get(`/results/${fileId}`);
-  return response.data;
-};
-
 export default api;

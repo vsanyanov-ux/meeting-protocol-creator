@@ -212,7 +212,7 @@ class YandexProvider(BaseAIProvider):
         logger.error("Long STT timed out after 1 hour.")
         return None
 
-    async def create_protocol(self, transcription: str) -> Dict[str, Any]:
+    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
         system_text = (
             "Ты — ведущий эксперт по техническому документообороту и промышленному инжинирингу. Твоя задача — составить официальный протокол совещания на основе расшифровки.\n\n"
@@ -307,7 +307,7 @@ class YandexProvider(BaseAIProvider):
         ]
         prompt = {
             "modelUri": f"gpt://{self.folder_id}/{self.gpt_model}",
-            "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": "3000"},
+            "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": "1000"},
             "messages": messages
         }
         

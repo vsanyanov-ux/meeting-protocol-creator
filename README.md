@@ -1,7 +1,7 @@
 # Протоколист 📝🎥🎤
 
 Автоматизированная система создания профессиональных протоколов совещаний из видео и аудиозаписей с использованием ИИ. 
-**Версия 5.0.0 (All-In-One GPU & Stability Update)**
+**Версия 4.2.0 (Resilience & Scale Update)**
 
 ---
 
@@ -38,12 +38,12 @@ graph TD
 
 ---
 
-## ✨ Ключевые особенности v5.0.0
-- **🚀 All-In-One GPU Architecture:** Полная акселерация всего пайплайна (**Whisper + Diarization + LLM**) на GPU. Модели сосуществуют в VRAM, обеспечивая мгновенный переход между этапами без задержек на загрузку.
-- **🎙️ Speaker Diarization 3.1 (GPU):** Интеграция новейшей модели Pyannote 3.1 с поддержкой CUDA. Скорость анализа спикеров выросла в 7-10 раз по сравнению с CPU-версией.
-- **🛡️ Rock-Solid Stability:** Новая стратегия управления памятью исключила критические ошибки DLL и вылеты процессов на Windows/WSL2 при переключении между стадиями транскрибации и генерации.
-- **🏎️ Ultra-Performance:** Общая скорость обработки встреч выросла в **2.3 раза**. 10 минут записи теперь превращаются в качественный протокол менее чем за 6 минут.
-- **🧠 AI-Аудитор 2.0:** Встроенный контроль качества с автоматическим выставлением оценок (Completeness, Accuracy) и выносом отчета аудитора в финал протокола.
+## ✨ Ключевые особенности v4.2.0
+- **🛡️ Resilience (Отказоустойчивость):** Внедрена система **Atomic Persistence**. Если обработка длинного совещания (1ч+) прервется, система возобновит работу с последнего сохраненного чанка.
+- **🚀 Multi-worker Backend:** Поддержка нескольких воркеров обеспечивает 100% доступность интерфейса (статус ONLINE) даже при 100% нагрузке на GPU/CPU.
+- **🔒 Cross-process Locking:** Умная координация аппаратных ресурсов между процессами через `gpu.lock` для предотвращения ошибок памяти (OOM).
+- **🛡️ AI-Аудитор 2.0:** Встроенный контроль качества с автоматическим выставлением оценок (Completeness, Accuracy) и выносом отчета аудитора в финал протокола.
+- **📈 Корпоративный контроль:** Интеграция с **Langfuse SDK v4** для мониторинга затрат и качества, а также Pilot Tracker для оценки ROI внедрения.
 
 ---
 
@@ -53,7 +53,7 @@ graph TD
 |-----------|------------|
 | **Frontend** | React, Vite, Framer Motion, Glassmorphism UI |
 | **Backend** | Python, FastAPI, Pydantic |
-| **Local AI** | Ollama (Qwen 3.5 4B/9B), Faster-Whisper (CUDA), Pyannote 3.1 (CUDA) |
+| **Local AI** | Ollama (Qwen 3.5), Faster-Whisper (CUDA Optimized) |
 | **Cloud AI** | Yandex SpeechKit v2, Yandex GPT (Latest) |
 | **Observability** | Langfuse v4 (SDK + UI) |
 | **Tracing** | OpenTelemetry compatible status tracking |
@@ -82,9 +82,9 @@ graph TD
 ---
 
 ## 💻 Системные требования
-- **GPU**: NVIDIA RTX 3060 12GB (Золотой стандарт для All-In-One GPU).
-- **RAM**: 32 ГБ RAM (Рекомендуется для стабильной работы с Whisper Medium и 9B моделями).
-- **OS**: Windows 10/11 (WSL2 + NVIDIA Container Toolkit).
+- **GPU**: NVIDIA RTX 3060 12GB+ (для Turbo-режима).
+- **RAM**: Минимум 16 ГБ RAM (8 ГБ для WSL2).
+- **OS**: Windows (с NVIDIA Container Toolkit) или Linux.
 
 ---
 

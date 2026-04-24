@@ -20,14 +20,12 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import protocolLogo from './assets/protocolist-logo.png';
-import { uploadMeeting, getProcessingStatus, getSystemInfo, getResults, API_BASE_URL } from './api';
+import { uploadMeeting, getProcessingStatus, getSystemInfo, API_BASE_URL } from './api';
 
 const PROVIDER_NAMES = {
   yandex: 'Yandex GPT',
-  local: 'Qwen 2.5 7B (локально)'
+  local: 'Qwen 2.5 (локально)'
 };
-
-const PROCESSING_STEPS = ['starting', 'uploading', 'transcribing', 'generating', 'verifying', 'generating_docx', 'emailing', 'completed'];
 
 const App = () => {
   const [file, setFile] = useState(null);
@@ -40,6 +38,7 @@ const App = () => {
   const [selectedProvider, setSelectedProvider] = useState('local');
   const [isBackendOnline, setIsBackendOnline] = useState(false);
   const fileInputRef = useRef(null);
+  const backendFailCount = useRef(0);
 
   // Fetch system info on mount
   useEffect(() => {
@@ -51,9 +50,14 @@ const App = () => {
           setSelectedProvider(info.default_provider);
         }
         setIsBackendOnline(true);
+        backendFailCount.current = 0; // Reset on success
       } catch (err) {
         console.error("Failed to fetch system info:", err);
-        setIsBackendOnline(false);
+        backendFailCount.current += 1;
+        // Only set offline if failed 3 times in a row
+        if (backendFailCount.current >= 3) {
+          setIsBackendOnline(false);
+        }
       }
     };
     fetchInfo();
@@ -68,23 +72,10 @@ const App = () => {
       interval = setInterval(async () => {
         try {
           const data = await getProcessingStatus(fileId);
-          if (data.status === 'completed') {
+          setStatus(data);
+          if (data.status === 'completed' || data.status === 'error') {
             clearInterval(interval);
             setLoading(false);
-            // Fetch heavy results separately for stability
-            try {
-              const fullResults = await getResults(fileId);
-              setStatus(prev => ({ ...prev, ...data, ...fullResults }));
-            } catch (resErr) {
-              console.error("Failed to fetch full results:", resErr);
-              setStatus(data); // Fallback to basic status
-            }
-          } else if (data.status === 'error') {
-            clearInterval(interval);
-            setLoading(false);
-            setStatus(data);
-          } else {
-            setStatus(data);
           }
         } catch (err) {
           console.error("Polling error:", err);
@@ -156,7 +147,8 @@ const App = () => {
 
   const currentStepIndex = () => {
     if (!status) return 0;
-    const idx = PROCESSING_STEPS.indexOf(status.status);
+    const steps = ['starting', 'uploading', 'transcribing', 'generating', 'verifying', 'emailing', 'completed'];
+    const idx = steps.indexOf(status.status);
     return idx === -1 ? 0 : idx;
   };
 
@@ -203,7 +195,7 @@ const App = () => {
                   fontWeight: 'bold',
                   fontSize: '0.85rem'
                 }}>
-                  {isBackendOnline ? 'АКТИВНА' : 'НЕДОСТУПНА'}
+                  {isBackendOnline ? 'ONLINE' : 'OFFLINE'}
                 </span>
               </div>
               <div className="system-badge">
@@ -275,7 +267,7 @@ const App = () => {
                       />
                       <ProviderOption 
                         id="local" 
-                        name="Qwen 2.5 7B (локально)" 
+                        name="Qwen 2.5 (локально)" 
                         selected={selectedProvider === 'local'} 
                         onClick={() => setSelectedProvider('local')} 
                       />
@@ -304,7 +296,7 @@ const App = () => {
                     disabled={!file || loading || !isBackendOnline}
                     onClick={() => handleUpload()}
                   >
-                    {loading ? <Loader2 className="animate-pulse" /> : "Создать протокол"}
+                    {loading ? <Loader2 className="animate-spin" /> : "Создать протокол"}
                   </button>
                 </div>
               </motion.div>
@@ -315,17 +307,36 @@ const App = () => {
                 animate={{ opacity: 1, scale: 1 }}
               >
                 <div style={{ marginBottom: '2rem' }}>
+                    <div style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '0.75rem', 
+                    marginBottom: '1.5rem', 
+                    padding: '0.75rem 1rem', 
+                    background: 'rgba(255,255,255,0.05)', 
+                    borderRadius: '12px',
+                    border: '1px solid rgba(255,255,255,0.1)'
+                  }}>
+                    <FileAudio size={20} className="text-primary" style={{ color: 'var(--primary)' }} />
+                    <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.2rem' }}>Текущий файл:</span>
+                      <span style={{ fontWeight: 600, fontSize: '1rem' }}>{status?.filename || file?.name || 'Загрузка...'}</span>
+                    </div>
+                  </div>
+
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-                    <span style={{ fontWeight: 600 }}>Статус обработки</span>
+                    <span style={{ fontWeight: 600 }}>
+                      {`Выполнено: ${status?.status === 'completed' ? '100%' : `${Math.round((currentStepIndex() / 6) * 100)}%`}`}
+                    </span>
                     <span style={{ fontSize: '0.875rem', color: 'var(--primary)' }}>
-                      {status?.status === 'completed' ? 'Завершено 100%' : 'В процессе...'}
+                      {status?.status === 'completed' ? 'Завершено' : 'В процессе...'}
                     </span>
                   </div>
                   <div className="progress-track">
                     <motion.div 
                       className="progress-fill"
                       initial={{ width: '0%' }}
-                      animate={{ width: `${((currentStepIndex() + 1) / PROCESSING_STEPS.length) * 100}%` }}
+                      animate={{ width: `${(currentStepIndex() / 6) * 100}%` }}
                     />
                   </div>
                 </div>
@@ -333,7 +344,7 @@ const App = () => {
                 <div className="status-container">
                   <StatusStep 
                     title="Загрузка" 
-                    desc="Загружаем аудио в облачное хранилище" 
+                    desc={selectedProvider === 'local' ? "Подготовка файла для локальной обработки" : "Загружаем аудио в облачное хранилище"} 
                     icon={<Upload size={18} />}
                     isActive={status?.status === 'uploading'}
                     isComplete={currentStepIndex() > 1}
@@ -363,7 +374,7 @@ const App = () => {
                     title="Отправка" 
                     desc="Формируем DOCX и отправляем на email" 
                     icon={<Mail size={18} />}
-                    isActive={status?.status === 'emailing' || status?.status === 'generating_docx'}
+                    isActive={status?.status === 'emailing'}
                     isComplete={currentStepIndex() > 5}
                   />
                 </div>
