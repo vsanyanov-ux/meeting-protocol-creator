@@ -411,7 +411,7 @@ async def process_meeting(
 ):
     """Main endpoint to upload audio and trigger the protocol creation flow."""
     file_id = existing_file_id or str(uuid.uuid4())
-    logger.info(f"Processing request: file_id={file_id}, email={email}, provider={provider}, has_file={file is not None}")
+    logger.info(f"Processing request: file_id={file_id}, email={email}, provider={provider}, diarize={diarize}, has_file={file is not None}")
     local_path = None
     extension = None
     
@@ -530,7 +530,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
     """Full pipeline: S3 Upload (optional) -> STT -> GPT -> DOCX -> Email (optional)."""
     import traceback
     
-    logger.info(f"run_full_pipeline STARTED for file_id={file_id}, path={local_path}, force_cpu={force_cpu}, provider={provider_type}")
+    logger.info(f"run_full_pipeline STARTED for file_id={file_id}, diarize={diarize}, path={local_path}, force_cpu={force_cpu}, provider={provider_type}")
     
     try:
         device_override = "cpu" if force_cpu else None

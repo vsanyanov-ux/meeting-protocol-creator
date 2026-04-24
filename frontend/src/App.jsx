@@ -320,8 +320,13 @@ const App = () => {
                         border: diarize ? '1px solid var(--secondary)' : '1px solid rgba(255,255,255,0.1)',
                         transition: 'all 0.3s ease'
                       }}
-                      onClick={() => setDiarize(!diarize)}
                     >
+                      <input 
+                        type="checkbox" 
+                        checked={diarize} 
+                        onChange={(e) => setDiarize(e.target.checked)} 
+                        style={{ display: 'none' }}
+                      />
                       <div style={{ 
                         width: '20px', 
                         height: '20px', 

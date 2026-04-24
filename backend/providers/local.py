@@ -220,6 +220,11 @@ class LocalProvider(BaseAIProvider):
                     
                     diarization_result = await asyncio.to_thread(run_diarization)
                     
+                    # Log some stats
+                    speakers = diarization_result.labels()
+                    logger.info(f"Diarization found {len(speakers)} speakers: {speakers}")
+                    status_updater("diarizing", f"Найдено спикеров: {len(speakers)}. Связываем с текстом...")
+                    
                     logger.info("Merging Whisper segments with speaker turns...")
                     formatted_lines = []
                     
@@ -246,8 +251,8 @@ class LocalProvider(BaseAIProvider):
                     logger.info("Diarization merging complete.")
                     
                 except Exception as de:
-                    logger.error(f"Diarization failed: {de}")
-                    status_updater("transcribing", "Ошибка диаризации, продолжаем с обычным текстом...")
+                    logger.error(f"Diarization failed critically: {de}", exc_info=True)
+                    status_updater("transcribing", f"⚠️ Диаризация не удалась: {str(de)}. Продолжаем без спикеров.")
             
             return transcription
         except Exception as e:
@@ -421,11 +426,22 @@ class LocalProvider(BaseAIProvider):
 
     async def format_transcript_with_ai(self, transcription: str) -> Dict[str, Any]:
         system_text = (
-            "Ты — эксперт по лингвистическому анализу. Твоя задача: улучшить расшифровку совещания.\n\n"
-            "ПРАВИЛА:\n1. СОХРАНЯЙ СТРУКТУРУ: Метки 'Спикер 1:', 'Спикер 2:' и временные метки НЕ УДАЛЯЙ.\n"
-            "2. ИДЕНТИФИКАЦИЯ: Замени 'Спикер X:' на 'Имя Фамилия:' если понятно из контекста.\n"
-            "3. ПУНКТУАЦИЯ: Исправь ошибки и разбей на абзацы.\n4. НЕ МЕНЯЙ СЛОВА."
+            "Ты — профессиональный редактор протоколов. Твоя задача: заменить технические метки спикеров на реальные имена, ЕСЛИ они упоминаются в тексте.\n\n"
+            "ПРАВИЛА:\n"
+            "1. ОБЯЗАТЕЛЬНО сохраняй формат '[ММ:СС] Имя:' в начале каждой реплики.\n"
+            "2. Если имя неизвестно, ОСТАВЛЯЙ 'Спикер X:' как есть. НЕ УДАЛЯЙ МЕТКИ.\n"
+            "3. Если в тексте кто-то говорит 'Я Алексей' или к нему обращаются 'Саша', замени 'Спикер 1:' на соответствующее имя.\n"
+            "4. Исправь пунктуацию, но НЕ МЕНЯЙ слова и НЕ УДАЛЯЙ временные метки.\n"
+            "5. Ответ должен содержать ВЕСЬ текст расшифровки с метками."
         )
-        messages = [{"role": "system", "content": system_text}, {"role": "user", "content": f"ОБРАБОТАЙ ТЕКСТ РАСШИФРОВКИ:\n\n{transcription}"}]
+        messages = [{"role": "system", "content": system_text}, {"role": "user", "content": f"ОБРАБОТАЙ ТЕКСТ (СОХРАНИ МЕТКИ):\n\n{transcription}"}]
         res = await self._call_ollama(messages, temperature=0.1)
-        return {"formatted_text": res["text"] or transcription, "input_tokens": res["input_tokens"], "output_tokens": res["output_tokens"]}
+        # Fallback to original if LLM output is too short, empty, or lost labels
+        formatted = res.get("text")
+        has_labels = "[" in (formatted or "") and ":" in (formatted or "")
+        
+        if not formatted or len(formatted) < len(transcription) * 0.5 or not has_labels:
+            logger.warning(f"LLM humanization result suspicious (length={len(formatted or '')}, has_labels={has_labels}). Falling back to raw diarization.")
+            formatted = transcription
+            
+        return {"formatted_text": formatted, "input_tokens": res["input_tokens"], "output_tokens": res["output_tokens"]}
