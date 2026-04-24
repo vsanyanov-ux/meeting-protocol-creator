@@ -20,7 +20,8 @@ class BaseAIProvider(ABC):
         audio_path: str, 
         file_id: str, 
         status_updater: Callable[[str, str], None],
-        trace: Any
+        trace: Any,
+        diarize: bool = False
     ) -> Optional[str]:
         """
         Transcribe audio file to text.

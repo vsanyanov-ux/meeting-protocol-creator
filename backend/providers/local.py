@@ -12,6 +12,7 @@ import gc
 import torch
 from faster_whisper import WhisperModel
 import ollama
+from pyannote.audio import Pipeline
 
 from .base import BaseAIProvider
 from exceptions import HardwareError
@@ -26,6 +27,7 @@ class LocalProvider(BaseAIProvider):
         self.ollama_url = ollama_url
         self.ollama_model = ollama_model
         self._whisper_model = None
+        self._diarizer = None
         self._model_verified = False
         
         # Determine device for Whisper (cuda/cpu)
@@ -119,6 +121,33 @@ class LocalProvider(BaseAIProvider):
                 raise
         return self._whisper_model
 
+    async def _get_diarizer(self):
+        if self._diarizer is None:
+            logger.info("--- DIARIZATION MODEL LOADING START ---")
+            t_start = time.time()
+            hf_token = os.getenv("HF_TOKEN")
+            if not hf_token:
+                logger.warning("HF_TOKEN not found in environment. Diarization may fail.")
+            
+            try:
+                # We use asyncio.to_thread because pipeline creation can be slow and blocking
+                def load_pipeline():
+                    pipeline = Pipeline.from_pretrained(
+                        "pyannote/speaker-diarization-3.1",
+                        use_auth_token=hf_token
+                    )
+                    if self.device == "cuda" and torch.cuda.is_available():
+                        pipeline.to(torch.device("cuda"))
+                    return pipeline
+
+                self._diarizer = await asyncio.to_thread(load_pipeline)
+                logger.info(f"--- DIARIZATION MODEL LOADING COMPLETE in {time.time() - t_start:.1f}s ---")
+            except Exception as e:
+                logger.error(f"Error loading diarization pipeline: {e}")
+                # Fallback or re-raise? For now, we'll let it raise so the pipeline knows it failed.
+                raise
+        return self._diarizer
+
     @property
     def name(self) -> str:
         return "local"
@@ -149,7 +178,8 @@ class LocalProvider(BaseAIProvider):
         audio_path: str, 
         file_id: str, 
         status_updater: Callable[[str, str], None],
-        trace: Any
+        trace: Any,
+        diarize: bool = False
     ) -> Optional[str]:
         # WITH 12GB VRAM, WE DON'T NEED TO UNLOAD MODELS SEQUENTIALLY
         if self.device == "cuda":
@@ -183,13 +213,57 @@ class LocalProvider(BaseAIProvider):
                     logger.info(f"Processed {i} segments...")
                 
             transcription = "\n".join(full_text).strip()
-            duration_sec = info.duration
-            latency_sec = time.time() - t_start
             
-            # Free VRAM for Ollama
-            # Temporarily disabled to diagnose crash on exit
-            # await self._cleanup_memory()
-            # await asyncio.sleep(2)
+            # --- DIARIZATION STAGE ---
+            if diarize:
+                try:
+                    logger.info("--- STARTING DIARIZATION STAGE ---")
+                    if status_updater:
+                        status_updater("diarizing", "Анализ голосов и разделение на спикеров...")
+                    
+                    diarizer = await self._get_diarizer()
+                    
+                    # Run diarization in a separate thread
+                    def run_diarization():
+                        return diarizer(audio_path)
+                    
+                    diarization_result = await asyncio.to_thread(run_diarization)
+                    
+                    # Merge segments with speakers
+                    logger.info("Merging Whisper segments with speaker turns...")
+                    formatted_lines = []
+                    
+                    # diarization_result is an Annotation object
+                    for seg in segments:
+                        # Find the speaker that overlaps most with this segment
+                        best_speaker = "Unknown"
+                        max_overlap = 0
+                        
+                        # Get speaker turns as a list of (segment, track, speaker)
+                        # We use the 'itertracks' to get speaker labels
+                        for turn, _, speaker in diarization_result.itertracks(yield_label=True):
+                            overlap = min(seg.end, turn.end) - max(seg.start, turn.start)
+                            if overlap > max_overlap:
+                                max_overlap = overlap
+                                best_speaker = speaker
+                        
+                        speaker_id = best_speaker.replace("SPEAKER_", "")
+                        try:
+                            # Convert 00, 01 to 1, 2
+                            label = f"Спикер {int(speaker_id) + 1}"
+                        except:
+                            label = best_speaker
+                            
+                        timestamp = f"[{int(seg.start // 60):02d}:{int(seg.start % 60):02d}]"
+                        formatted_lines.append(f"{timestamp} {label}: {seg.text.strip()}")
+                        
+                    transcription = "\n".join(formatted_lines).strip()
+                    logger.info("Diarization merging complete.")
+                    
+                except Exception as de:
+                    logger.error(f"Diarization failed: {de}")
+                    if status_updater:
+                        status_updater("transcribing", "Ошибка диаризации, продолжаем с обычным текстом...")
             
             return transcription
         except Exception as e:
@@ -440,12 +514,17 @@ class LocalProvider(BaseAIProvider):
 
     async def format_transcript_with_ai(self, transcription: str) -> Dict[str, Any]:
         system_text = (
-            "Ты — эксперт по лингвистическому анализу диалогов. Твоя задача: превратить сплошной текст расшифровки в структурированный диалог.\n\n"
-            "ПРАВИЛА:\n1. Распознавай смену спикеров по смыслу.\n2. Используй метки: 'Спикер 1:', 'Спикер 2:'.\n3. НЕ МЕНЯЙ СЛОВА."
+            "Ты — эксперт по лингвистическому анализу и структурированию диалогов. Твоя задача: улучшить расшифровку совещания.\n\n"
+            "ПРАВИЛА:\n"
+            "1. СОХРАНЯЙ СТРУКТУРУ: В тексте уже есть метки 'Спикер 1:', 'Спикер 2:' и временные метки. НЕ УДАЛЯЙ ИХ.\n"
+            "2. ИДЕНТИФИКАЦИЯ: Если из контекста понятно имя человека (например, кто-то представился или к нему обратились), "
+            "замени 'Спикер X:' на 'Имя Фамилия:' во всем тексте.\n"
+            "3. ПУНКТУАЦИЯ: Исправь ошибки пунктуации и разбей текст на логические абзацы внутри реплик.\n"
+            "4. НЕ МЕНЯЙ СЛОВА: Оставляй прямую речь как она есть, без перефразирования."
         )
         messages = [
             {"role": "system", "content": system_text},
-            {"role": "user", "content": f"РАСШИФРОВКА:\n{transcription}"}
+            {"role": "user", "content": f"ОБРАБОТАЙ ТЕКСТ РАСШИФРОВКИ:\n\n{transcription}"}
         ]
         res = await self._call_ollama(messages, temperature=0.1)
         return {
