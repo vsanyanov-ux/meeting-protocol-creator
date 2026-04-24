@@ -167,7 +167,7 @@ const App = () => {
     if (!status) return 0;
     // Map backend status names to indices: 
     // starting=0, uploading=1, transcribing=2, summarizing=3, verifying=4, sending=5, completed=6
-    const steps = ['starting', 'uploading', 'transcribing', 'summarizing', 'verifying', 'sending', 'completed'];
+    const steps = ['starting', 'uploading', 'transcribing', 'diarizing', 'summarizing', 'verifying', 'sending', 'completed'];
     // Fallback mapping for older/alternative names
     let currentStatus = status.status;
     if (currentStatus === 'generating') currentStatus = 'summarizing';
@@ -430,25 +430,32 @@ const App = () => {
                     isComplete={currentStepIndex() > 2}
                   />
                   <StatusStep 
+                    title="Диаризация" 
+                    desc={isActiveStep('diarizing') && status?.message ? status.message : "Разделение голосов и идентификация спикеров"} 
+                    icon={<Monitor size={18} />}
+                    isActive={isActiveStep('diarizing')}
+                    isComplete={currentStepIndex() > 3}
+                  />
+                  <StatusStep 
                     title="Анализ и Саммери" 
                     desc={isActiveStep('generating') && status?.message ? status.message : `Генерация протокола через ${selectedProvider?.toUpperCase() || 'AI'}`} 
                     icon={<FileText size={18} />}
                     isActive={isActiveStep('generating')}
-                    isComplete={currentStepIndex() > 3}
+                    isComplete={currentStepIndex() > 4}
                   />
                   <StatusStep 
                     title="Верификация" 
                     desc="AI-Аудитор проверяет точность протокола" 
                     icon={<ShieldCheck size={18} />}
                     isActive={status?.status === 'verifying'}
-                    isComplete={currentStepIndex() > 4}
+                    isComplete={currentStepIndex() > 5}
                   />
                   <StatusStep 
                     title="Отправка" 
                     desc="Формируем DOCX и отправляем на email" 
                     icon={<Mail size={18} />}
                     isActive={status?.status === 'emailing'}
-                    isComplete={currentStepIndex() > 5}
+                    isComplete={currentStepIndex() > 6}
                   />
                 </div>
 
