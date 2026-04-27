@@ -20,8 +20,7 @@ class BaseAIProvider(ABC):
         audio_path: str, 
         file_id: str, 
         status_updater: Callable[[str, str], None],
-        trace: Any,
-        diarize: bool = False
+        trace: Any
     ) -> Optional[str]:
         """
         Transcribe audio file to text.
@@ -45,10 +44,3 @@ class BaseAIProvider(ABC):
         """
         pass
 
-    @abstractmethod
-    async def format_transcript_with_ai(self, transcription: str) -> Dict[str, Any]:
-        """
-        Add speaker labels to raw text using LLM context.
-        Returns dict with: formatted_text (str), input_tokens (int), output_tokens (int)
-        """
-        pass

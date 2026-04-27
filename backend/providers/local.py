@@ -10,9 +10,9 @@ from typing import Optional, List, Dict, Any, Callable
 from loguru import logger
 import gc
 import torch
+import torchaudio
 from faster_whisper import WhisperModel
 import ollama
-from pyannote.audio import Pipeline
 
 from .base import BaseAIProvider
 from exceptions import HardwareError
@@ -28,7 +28,6 @@ class LocalProvider(BaseAIProvider):
         self.ollama_url = ollama_url
         self.ollama_model = ollama_model
         self._whisper_model = None
-        self._diarizer = None
         self._model_verified = False
         
         # Determine device for Whisper (cuda/cpu)
@@ -122,31 +121,6 @@ class LocalProvider(BaseAIProvider):
                 raise
         return self._whisper_model
 
-    async def _get_diarizer(self):
-        if self._diarizer is None:
-            logger.info("--- DIARIZATION MODEL LOADING START ---")
-            t_start = time.time()
-            hf_token = os.getenv("HF_TOKEN")
-            if not hf_token:
-                logger.warning("HF_TOKEN not found in environment. Diarization may fail.")
-            
-            try:
-                # We use asyncio.to_thread because pipeline creation can be slow and blocking
-                def load_pipeline():
-                    pipeline = Pipeline.from_pretrained(
-                        "pyannote/speaker-diarization-3.1",
-                        token=hf_token
-                    )
-                    if self.device == "cuda" and torch.cuda.is_available():
-                        pipeline.to(torch.device("cuda"))
-                    return pipeline
-
-                self._diarizer = await asyncio.to_thread(load_pipeline)
-                logger.info(f"--- DIARIZATION MODEL LOADING COMPLETE in {time.time() - t_start:.1f}s ---")
-            except Exception as e:
-                logger.error(f"Error loading diarization pipeline: {e}")
-                raise
-        return self._diarizer
 
     @property
     def name(self) -> str:
@@ -176,8 +150,7 @@ class LocalProvider(BaseAIProvider):
         audio_path: str, 
         file_id: str, 
         status_updater: Callable[[str, str], None],
-        trace: Any,
-        diarize: bool = False
+        trace: Any
     ) -> Optional[str]:
         if self.device == "cuda":
             await self._unload_ollama_models()
@@ -202,58 +175,15 @@ class LocalProvider(BaseAIProvider):
             
             full_text = []
             for i, segment in enumerate(segments):
-                full_text.append(segment.text)
+                # Generate timestamp for every segment
+                timestamp = f"[{int(segment.start // 60):02d}:{int(segment.start % 60):02d}]"
+                full_text.append(f"{timestamp} {segment.text.strip()}")
+                
                 if i % 10 == 0 and i > 0:
                     status_updater("transcribing", f"Обработано {i} фрагментов речи...")
                 
             transcription = "\n".join(full_text).strip()
             
-            # --- DIARIZATION STAGE ---
-            if diarize:
-                try:
-                    logger.info("--- STARTING DIARIZATION STAGE ---")
-                    status_updater("diarizing", "Анализ голосов и разделение на спикеров...")
-                    
-                    diarizer = await self._get_diarizer()
-                    
-                    def run_diarization():
-                        return diarizer(audio_path)
-                    
-                    diarization_result = await asyncio.to_thread(run_diarization)
-                    
-                    # Log some stats
-                    speakers = diarization_result.labels()
-                    logger.info(f"Diarization found {len(speakers)} speakers: {speakers}")
-                    status_updater("diarizing", f"Найдено спикеров: {len(speakers)}. Связываем с текстом...")
-                    
-                    logger.info("Merging Whisper segments with speaker turns...")
-                    formatted_lines = []
-                    
-                    for seg in segments:
-                        best_speaker = "Unknown"
-                        max_overlap = 0
-                        
-                        for turn, _, speaker in diarization_result.itertracks(yield_label=True):
-                            overlap = min(seg.end, turn.end) - max(seg.start, turn.start)
-                            if overlap > max_overlap:
-                                max_overlap = overlap
-                                best_speaker = speaker
-                        
-                        speaker_id = best_speaker.replace("SPEAKER_", "")
-                        try:
-                            label = f"Спикер {int(speaker_id) + 1}"
-                        except:
-                            label = best_speaker
-                            
-                        timestamp = f"[{int(seg.start // 60):02d}:{int(seg.start % 60):02d}]"
-                        formatted_lines.append(f"{timestamp} {label}: {seg.text.strip()}")
-                        
-                    transcription = "\n".join(formatted_lines).strip()
-                    logger.info("Diarization merging complete.")
-                    
-                except Exception as de:
-                    logger.error(f"Diarization failed critically: {de}", exc_info=True)
-                    status_updater("transcribing", f"⚠️ Диаризация не удалась: {str(de)}. Продолжаем без спикеров.")
             
             return transcription
         except Exception as e:
@@ -447,38 +377,29 @@ class LocalProvider(BaseAIProvider):
         
         messages = [{"role": "system", "content": system_text}, {"role": "user", "content": user_text}]
         res = await self._call_ollama(messages, temperature=0.1)
-        return {"verification_report": res["text"] or "Ошибка верификации", "input_tokens": res["input_tokens"], "output_tokens": res["output_tokens"]}
+        
+        text = res.get("text", "")
+        scores = {}
+        
+        # Попытка извлечь JSON с оценками
+        import re
+        try:
+            json_match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
+            if json_match:
+                score_data = json.loads(json_match.group(1))
+                scores = score_data.get("scores", {})
+                logger.info(f"✅ Auditor scores extracted (local): {scores}")
+        except Exception as je:
+            logger.warning(f"Could not parse auditor scores (local): {je}")
 
-    async def format_transcript_with_ai(self, transcription: str) -> Dict[str, Any]:
-        fallback_system = (
-            "Ты — профессиональный редактор. Твоя задача: заменить 'Спикер X:' на реальные имена из контекста.\n"
-            "ПРАВИЛА:\n"
-            "1. ФОРМАТ СТРОГО: '[ММ:СС] Имя: Текст' (например: '[01:15] Алексей: Привет').\n"
-            "2. Если имя не найдено, ОСТАВЛЯЙ 'Спикер X:'.\n"
-            "3. Выдай ТОЛЬКО обработанный текст без своих комментариев и вступлений.\n"
-            "4. Не удаляй временные метки."
-        )
-        system_text = get_prompt("meeting_humanize_speakers", fallback=fallback_system)
+        # Очистка текста от JSON и технических заголовков для пользователя
+        clean_report = re.sub(r"```json\s*\{.*?\}\s*```", "", text, flags=re.DOTALL)
+        clean_report = re.sub(r"###?\s*JSON.*?\n", "", clean_report, flags=re.IGNORECASE)
         
-        user_prompt = get_prompt("meeting_humanize_speakers_user", fallback="Транскрипция для обработки:\n\n{{transcription}}")
-        user_text = user_prompt.replace("{{transcription}}", transcription)
+        return {
+            "verification_report": clean_report.strip() or "Ошибка верификации", 
+            "input_tokens": res["input_tokens"], 
+            "output_tokens": res["output_tokens"],
+            "scores": scores
+        }
 
-        messages = [{"role": "system", "content": system_text}, {"role": "user", "content": user_text}]
-        res = await self._call_ollama(messages, temperature=0.1)
-        
-        formatted = res.get("text", "")
-        
-        # --- Post-processing to clean LLM artifacts ---
-        # 1. Remove echo of instructions if present
-        if "Транскрипция для обработки:" in formatted:
-            formatted = formatted.split("Транскрипция для обработки:")[-1].strip()
-        if "ОБРАБОТАЙ ТЕКСТ" in formatted:
-            formatted = formatted.split("ОБРАБОТАЙ ТЕКСТ")[-1].strip()
-        
-        # Fallback logic
-        has_labels = "[" in (formatted or "") and ":" in (formatted or "")
-        if not formatted or len(formatted) < len(transcription) * 0.5 or not has_labels:
-            logger.warning("LLM humanization failed or returned garbage. Falling back to raw.")
-            formatted = transcription
-            
-        return {"formatted_text": formatted.strip(), "input_tokens": res["input_tokens"], "output_tokens": res["output_tokens"]}

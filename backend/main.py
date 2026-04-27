@@ -407,12 +407,12 @@ async def process_meeting(
     provider: str = Form(None),
     existing_file_id: str = Form(None),
     force_cpu: bool = Form(False),
-    diarize: bool = Form(False),
-    session_id: str = Form(None)
+    session_id: str = Form(None),
+    send_email: bool = Form(True)
 ):
     """Main endpoint to upload audio and trigger the protocol creation flow."""
     file_id = existing_file_id or str(uuid.uuid4())
-    logger.info(f"Processing request: file_id={file_id}, session_id={session_id}, email={email}, provider={provider}, diarize={diarize}, has_file={file is not None}")
+    logger.info(f"Processing request: file_id={file_id}, session_id={session_id}, email={email}, send_email={send_email}, provider={provider}, has_file={file is not None}")
     local_path = None
     extension = None
     
@@ -516,7 +516,7 @@ async def process_meeting(
 
     # 4. Trigger processing in background ONLY IF NOT ALREADY PROCESSING
     if not existing_status or existing_status.get("status") in ["error", "failed", "completed"]:
-        background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu, diarize, session_id)
+        background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu, session_id, send_email)
         background_tasks.add_task(cleanup_old_files)
     else:
         logger.info(f"Pipeline for {file_id} is already running. Skipping redundant task trigger.")
@@ -527,11 +527,11 @@ async def process_meeting(
         "message": "Audio is being transcribed and processed."
     }
 
-async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None, recipient_email: str = None, provider_type: str = None, force_cpu: bool = False, diarize: bool = False, session_id: str = None):
+async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None, recipient_email: str = None, provider_type: str = None, force_cpu: bool = False, session_id: str = None, should_send_email: bool = True):
     """Full pipeline: S3 Upload (optional) -> STT -> GPT -> DOCX -> Email (optional)."""
     import traceback
     
-    logger.info(f"run_full_pipeline STARTED for file_id={file_id}, diarize={diarize}, path={local_path}, force_cpu={force_cpu}, provider={provider_type}")
+    logger.info(f"run_full_pipeline STARTED for file_id={file_id}, path={local_path}, force_cpu={force_cpu}, provider={provider_type}")
     
     try:
         device_override = "cpu" if force_cpu else None
@@ -578,13 +578,12 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                         status_manager.update(file_id, {"status": status, "message": msg})
                     
                     try:
-                        transcription = await current_provider.transcribe_audio(
-                            audio_path=norm_res["path"], 
-                            file_id=file_id, 
-                            status_updater=status_updater, 
-                            trace=trace,
-                            diarize=diarize
-                        )
+                            transcription = await current_provider.transcribe_audio(
+                                audio_path=norm_res["path"], 
+                                file_id=file_id, 
+                                status_updater=status_updater, 
+                                trace=trace
+                            )
                     except HardwareError as he:
                         logger.warning(f"GPU FAILURE: {he}. Attempting automatic fallback to CPU...")
                         status_updater("transcribing", "GPU (CUDA) is unavailable or crashed. Automatically falling back to CPU mode...")
@@ -597,8 +596,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                                 audio_path=norm_res["path"], 
                                 file_id=file_id, 
                                 status_updater=status_updater, 
-                                trace=trace,
-                                diarize=diarize
+                                trace=trace
                             )
                         except Exception as cpu_error:
                             logger.error(f"CPU Fallback also failed: {cpu_error}")
@@ -629,27 +627,6 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
 
                 # Store transcription for manual review
                 status_manager.update(file_id, {"transcription": transcription})
-                # B2. Speaker Humanization Stage (Semantic Diarization)
-                if diarize:
-                    status_manager.update(file_id, {"status": "diarizing", "message": "Ollama is identifying speaker names from context..."})
-                    try:
-                        trace.start_span("speaker_humanization")
-                        format_res = await current_provider.format_transcript_with_ai(transcription)
-                        transcription = format_res["formatted_text"]
-                        
-                        # Log humanization to Langfuse
-                        trace.log_generation(
-                            input_messages=[{"role": "user", "content": "Humanize speakers"}],
-                            output_text=transcription,
-                            model=f"{current_provider.model_name}_humanizer",
-                            input_tokens=format_res["input_tokens"],
-                            output_tokens=format_res["output_tokens"]
-                        )
-                        trace.end_span("speaker_humanization", {"success": True})
-                        status_manager.update(file_id, {"transcription": transcription})
-                    except Exception as e:
-                        logger.warning(f"Speaker humanization failed: {e}")
-                        trace.log_error("speaker_humanization", str(e))
 
                 # C. Create Protocol via Provider's GPT
                 status_manager.update(file_id, {"status": "generating", "message": "Analyzing meeting content and generating protocol..."})
@@ -721,9 +698,9 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                     trace.log_error("docx_generation", err_msg, traceback.format_exc())
                     raise e
 
-                # E. Send Email (Skip if no SMTP configured)
+                # E. Send Email (Skip if no SMTP configured or user opted out)
                 smtp_user = os.getenv("SMTP_USER")
-                if smtp_user:
+                if smtp_user and should_send_email:
                     status_manager.update(file_id, {"status": "emailing", "message": "Sending protocol to your email..."})
                     trace.start_span("email_send")
                     # Recipient logic: 1. Passed manually, 2. Env var, 3. Default hardcoded

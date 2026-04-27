@@ -51,14 +51,14 @@ def test_api_workflow(client):
     assert status_resp.status_code == 200
     assert "status" in status_resp.json()
     
-    # 3. Simulate completion (Manually update the dict for integration test)
-    from main import processing_status
+    # 3. Simulate completion (Manually update the status for integration test)
+    from main import status_manager
     dummy_docx = "temp_protocols/mock_protocol.docx"
-    processing_status[file_id] = {
+    status_manager.set(file_id, {
         "status": "completed",
         "message": "Protocol ready.",
         "docx_path": dummy_docx
-    }
+    })
     
     # Check completed status
     status_resp = client.get(f"/status/{file_id}")
@@ -79,9 +79,9 @@ def test_api_workflow(client):
 def test_feedback_success(client):
     """Verify feedback submission."""
     file_id = str(uuid.uuid4())
-    # Mock existence in processing_status
-    from main import processing_status
-    processing_status[file_id] = {"status": "completed"}
+    # Mock existence in status_manager
+    from main import status_manager
+    status_manager.set(file_id, {"status": "completed"})
     
     response = client.post(f"/feedback/{file_id}", json={
         "score": 5.0,
@@ -90,3 +90,11 @@ def test_feedback_success(client):
     })
     assert response.status_code == 200
     assert response.json()["status"] in ["ok", "skipped"]
+
+def test_process_meeting_no_email(client):
+    """Verify that send_email=false is accepted."""
+    files = {"file": ("test.mp3", b"fake-mp3-content", "audio/mpeg")}
+    response = client.post("/process-meeting", data={"send_email": "false"}, files=files)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "processing"

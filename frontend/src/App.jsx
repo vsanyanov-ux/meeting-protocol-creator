@@ -15,8 +15,7 @@ import {
   Languages,
   Server,
   Wifi,
-  Cpu,
-  Monitor
+  Cpu
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import protocolLogo from './assets/protocolist-logo.png';
@@ -37,8 +36,8 @@ const App = () => {
   const [systemInfo, setSystemInfo] = useState({ location: 'Загрузка...', default_provider: 'yandex', provider_name: 'Яндекс Cloud', is_online: false });
   const [selectedProvider, setSelectedProvider] = useState('local');
   const [isBackendOnline, setIsBackendOnline] = useState(false);
-  const [diarize, setDiarize] = useState(false);
   const [sessionId, setSessionId] = useState(null);
+  const [shouldSendEmail, setShouldSendEmail] = useState(true);
   const fileInputRef = useRef(null);
   const backendFailCount = useRef(0);
 
@@ -120,8 +119,8 @@ const App = () => {
         targetProvider, 
         isFallback ? fileId : null, 
         forceCpu,
-        diarize,
-        sessionId
+        sessionId,
+        shouldSendEmail
       );
       if (!isFallback) setFileId(result.file_id);
       setStatus({ status: 'starting', message: 'Перезапуск с новыми параметрами...' });
@@ -179,7 +178,7 @@ const App = () => {
     if (!status) return 0;
     // Map backend status names to indices: 
     // starting=0, uploading=1, transcribing=2, summarizing=3, verifying=4, sending=5, completed=6
-    const steps = ['starting', 'uploading', 'transcribing', 'diarizing', 'summarizing', 'verifying', 'sending', 'completed'];
+    const steps = ['starting', 'uploading', 'transcribing', 'summarizing', 'verifying', 'sending', 'completed'];
     // Fallback mapping for older/alternative names
     let currentStatus = status.status;
     if (currentStatus === 'generating') currentStatus = 'summarizing';
@@ -318,51 +317,6 @@ const App = () => {
                     </div>
                   </div>
 
-                  {/* Diarization Toggle */}
-                  <div className="input-field-group" style={{ marginBottom: '1.5rem' }}>
-                    <label 
-                      style={{ 
-                        display: 'flex', 
-                        alignItems: 'center', 
-                        gap: '0.75rem', 
-                        cursor: 'pointer',
-                        padding: '1rem',
-                        background: 'rgba(255,255,255,0.05)',
-                        borderRadius: '12px',
-                        border: diarize ? '1px solid var(--secondary)' : '1px solid rgba(255,255,255,0.1)',
-                        transition: 'all 0.3s ease'
-                      }}
-                    >
-                      <input 
-                        type="checkbox" 
-                        checked={diarize} 
-                        onChange={(e) => setDiarize(e.target.checked)} 
-                        style={{ display: 'none' }}
-                      />
-                      <div style={{ 
-                        width: '20px', 
-                        height: '20px', 
-                        borderRadius: '4px', 
-                        border: '2px solid var(--secondary)',
-                        background: diarize ? 'var(--secondary)' : 'transparent',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        transition: 'all 0.2s ease'
-                      }}>
-                        {diarize && <CheckCircle2 size={14} color="white" />}
-                      </div>
-                      <div style={{ flex: 1 }}>
-                        <span style={{ display: 'block', fontSize: '0.95rem', fontWeight: 600, color: diarize ? 'white' : 'var(--text-muted)' }}>
-                          Диаризация (Распознавание спикеров)
-                        </span>
-                        <span style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
-                          Разделение голосов и определение имен участников из контекста
-                        </span>
-                      </div>
-                      <Mic size={18} style={{ color: diarize ? 'var(--secondary)' : 'var(--text-muted)', opacity: 0.6 }} />
-                    </label>
-                  </div>
 
                   <div className="input-field-group" style={{ marginBottom: '1.5rem' }}>
                     <label style={{ display: 'block', marginBottom: '0.75rem', fontSize: '0.9rem', fontWeight: 500, color: 'var(--text-muted)' }}>
@@ -378,6 +332,39 @@ const App = () => {
                         className="glass-input"
                         style={{ width: '100%', paddingLeft: '3rem', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: 'white', height: '3.5rem' }}
                       />
+                    </div>
+                    
+                    <div 
+                      onClick={() => setShouldSendEmail(!shouldSendEmail)}
+                      style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        gap: '0.75rem', 
+                        marginTop: '1rem', 
+                        cursor: 'pointer',
+                        userSelect: 'none',
+                        padding: '0.5rem',
+                        borderRadius: '8px',
+                        transition: 'background 0.2s',
+                      }}
+                      className="hover-bg-glass"
+                    >
+                      <div style={{ 
+                        width: '20px', 
+                        height: '20px', 
+                        borderRadius: '4px', 
+                        border: '2px solid var(--primary)', 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'center',
+                        background: shouldSendEmail ? 'var(--primary)' : 'transparent',
+                        transition: 'all 0.2s'
+                      }}>
+                        {shouldSendEmail && <CheckCircle2 size={14} color="white" />}
+                      </div>
+                      <span style={{ fontSize: '0.85rem', color: shouldSendEmail ? 'white' : 'var(--text-muted)' }}>
+                        Отправить результат на почту
+                      </span>
                     </div>
                   </div>
                   
@@ -447,32 +434,25 @@ const App = () => {
                     isComplete={currentStepIndex() > 2}
                   />
                   <StatusStep 
-                    title="Диаризация" 
-                    desc={isActiveStep('diarizing') && status?.message ? status.message : "Разделение голосов и идентификация спикеров"} 
-                    icon={<Monitor size={18} />}
-                    isActive={isActiveStep('diarizing')}
-                    isComplete={currentStepIndex() > 3}
-                  />
-                  <StatusStep 
                     title="Анализ и Саммери" 
                     desc={isActiveStep('generating') && status?.message ? status.message : `Генерация протокола через ${selectedProvider?.toUpperCase() || 'AI'}`} 
                     icon={<FileText size={18} />}
                     isActive={isActiveStep('generating')}
-                    isComplete={currentStepIndex() > 4}
+                    isComplete={currentStepIndex() > 3}
                   />
                   <StatusStep 
                     title="Верификация" 
                     desc="AI-Аудитор проверяет точность протокола" 
                     icon={<ShieldCheck size={18} />}
                     isActive={status?.status === 'verifying'}
-                    isComplete={currentStepIndex() > 5}
+                    isComplete={currentStepIndex() > 4}
                   />
                   <StatusStep 
                     title="Отправка" 
-                    desc="Формируем DOCX и отправляем на email" 
+                    desc={!shouldSendEmail && currentStepIndex() > 4 ? "Отправка пропущена (опционально)" : "Формируем DOCX и отправляем на email"} 
                     icon={<Mail size={18} />}
                     isActive={status?.status === 'emailing'}
-                    isComplete={currentStepIndex() > 6}
+                    isComplete={currentStepIndex() > 5 || (!shouldSendEmail && currentStepIndex() > 4)}
                   />
                 </div>
 
