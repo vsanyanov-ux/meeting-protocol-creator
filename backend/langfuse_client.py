@@ -83,7 +83,6 @@ class PipelineTrace:
         try:
             # 1. Сначала включаем официальный метод проброса атрибутов трейса.
             # Это гарантирует, что ВСЕ последующие наблюдения в этом контексте получат sessionId.
-<<<<<<< HEAD
             # self._prop_ctx = self.lf.propagate_attributes(
             #     session_id=self.session_id,
             #     trace_name=f"Meeting: {self.filename}",
@@ -91,14 +90,6 @@ class PipelineTrace:
             # )
             # if self._prop_ctx:
             #     self._prop_ctx.__enter__()
-=======
-            self._prop_ctx = self.lf.propagate_attributes(
-                session_id=self.session_id,
-                trace_name=f"Meeting: {self.filename}",
-                tags=["meeting-protocol", self.provider]
-            )
-            self._prop_ctx.__enter__()
->>>>>>> f89b4176a9ea12e43e71c53c6ff04bc3f5d90149
 
             # 2. Начинаем корневой span.
             self._root_obs = self.lf.start_observation(
