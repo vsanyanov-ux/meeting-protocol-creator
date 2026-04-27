@@ -20,7 +20,7 @@ from langfuse_client import get_prompt
 
 class LocalProvider(BaseAIProvider):
     def __init__(self, 
-                 whisper_model_size: str = "medium", 
+                 whisper_model_size: str = "large-v3-turbo", 
                  ollama_url: str = "http://127.0.0.1:11434",
                  ollama_model: str = "qwen2.5:latest",
                  device: Optional[str] = None):
@@ -94,7 +94,8 @@ class LocalProvider(BaseAIProvider):
             try:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                    torch.cuda.ipc_collect()
+                    # ipc_collect() can be unstable on some Windows drivers, removing it
+                    # torch.cuda.ipc_collect() 
                     logger.info("--- MEMORY CLEANUP: CUDA cache cleared successfully ---")
                 else:
                     logger.warning("--- MEMORY CLEANUP: CUDA not available in Torch, skipping cache clear ---")
@@ -168,8 +169,12 @@ class LocalProvider(BaseAIProvider):
             t_start = time.time()
             
             def run_transcription():
-                segments, info = model.transcribe(audio_path, beam_size=5, language="ru")
-                return list(segments), info
+                segments_gen, info = model.transcribe(audio_path, beam_size=5, language="ru")
+                # Convert to plain data (list of dicts) immediately to decouple from model internals
+                plain_segments = []
+                for s in segments_gen:
+                    plain_segments.append({"start": s.start, "text": s.text})
+                return plain_segments, info
 
             segments, info = await asyncio.to_thread(run_transcription)
             logger.info(f"Segments generated: {len(segments)}. Language: {info.language}")
@@ -177,25 +182,28 @@ class LocalProvider(BaseAIProvider):
             full_text = []
             for i, segment in enumerate(segments):
                 # Generate timestamp for every segment
-                timestamp = f"[{int(segment.start // 60):02d}:{int(segment.start % 60):02d}]"
-                full_text.append(f"{timestamp} {segment.text.strip()}")
+                start_time = segment["start"]
+                text = segment["text"]
+                timestamp = f"[{int(start_time // 60):02d}:{int(start_time % 60):02d}]"
+                full_text.append(f"{timestamp} {text.strip()}")
                 
                 if i % 10 == 0 and i > 0:
                     status_updater("transcribing", f"Обработано {i} фрагментов речи...")
                 
-            transcription = "\n".join(full_text).strip()
+            # transcription = "\n".join(full_text).strip() # Moved below
             
-            # Освобождаем видеопамять от Whisper перед запуском Ollama
-            if self.device == "cuda":
-                await self._cleanup_memory()
-                await asyncio.sleep(2)  # Важная пауза перед загрузкой Qwen в Ollama
+            result_str = "\n".join(full_text).strip()
+            logger.info(f"--- TRANSCRIPTION COMPLETE: Success ({len(result_str)} chars) ---")
             
-            return transcription
+            # Note: We don't do aggressive cleanup here because it causes SegFaults on some drivers.
+            # Memory will be reclaimed during the next task's pre-cleanup or by GC naturally.
+            
+            return result_str
         except Exception as e:
             logger.error(f"Local transcription error: {e}")
             trace.log_error("transcription", str(e))
-            if self.device == "cuda":
-                await self._cleanup_memory()
+            # if self.device == "cuda":
+            #     await self._cleanup_memory()
             raise e
 
     async def _ensure_model_exists(self, client: ollama.Client):
@@ -225,6 +233,7 @@ class LocalProvider(BaseAIProvider):
             "messages": messages,
             "stream": False,
             "think": False,  # Disable Qwen3.5 thinking mode to prevent empty responses
+            "keep_alive": 0,  # Force unload model after request
             "options": {
                 "temperature": temperature,
                 "num_predict": 4096,

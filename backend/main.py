@@ -136,7 +136,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Протоколист API",
-    version="4.2.1",
+    version="5.0.0",
     lifespan=lifespan
 )
 
@@ -191,7 +191,7 @@ def get_provider(provider_type: Optional[str] = None, device: Optional[str] = No
     elif provider_type in ["local", "ollama"]:
         from providers.local import LocalProvider
         return LocalProvider(
-            whisper_model_size=os.getenv("WHISPER_MODEL", "large-v3"),
+            whisper_model_size=os.getenv("WHISPER_MODEL", "large-v3-turbo"),
             ollama_url=os.getenv("OLLAMA_URL", "http://localhost:11434"),
             ollama_model=os.getenv("OLLAMA_MODEL", "qwen3.5:9b"),
             device=device
@@ -634,9 +634,11 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                     return
 
                 # Store transcription for manual review
+                logger.info(f"--- DATABASE: Saving transcription for {file_id} ({len(transcription)} chars) ---")
                 status_manager.update(file_id, {"transcription": transcription})
 
                 # C. Create Protocol via Provider's GPT
+                logger.info(f"--- PROTOCOL GENERATION: Starting for file_id={file_id}. Transcription length: {len(transcription)} chars ---")
                 status_manager.update(file_id, {"status": "generating", "message": "Analyzing meeting content and generating protocol..."})
                 
                 try:
