@@ -15,9 +15,13 @@ import {
   Languages,
   Server,
   Wifi,
+<<<<<<< HEAD
   Cpu,
   Lock,
   LockOpen
+=======
+  Cpu
+>>>>>>> f89b4176a9ea12e43e71c53c6ff04bc3f5d90149
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import protocolLogo from './assets/protocolist-logo.png';
@@ -46,7 +50,11 @@ const App = () => {
   const [selectedProvider, setSelectedProvider] = useState('local');
   const [isBackendOnline, setIsBackendOnline] = useState(false);
   const [sessionId, setSessionId] = useState(null);
+<<<<<<< HEAD
   const [shouldSendEmail, setShouldSendEmail] = useState(false);
+=======
+  const [shouldSendEmail, setShouldSendEmail] = useState(true);
+>>>>>>> f89b4176a9ea12e43e71c53c6ff04bc3f5d90149
   const fileInputRef = useRef(null);
   const backendFailCount = useRef(0);
 

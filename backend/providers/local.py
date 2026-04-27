@@ -182,6 +182,7 @@ class LocalProvider(BaseAIProvider):
             full_text = []
             for i, segment in enumerate(segments):
                 # Generate timestamp for every segment
+<<<<<<< HEAD
                 start_time = segment["start"]
                 text = segment["text"]
                 timestamp = f"[{int(start_time // 60):02d}:{int(start_time % 60):02d}]"
@@ -194,6 +195,16 @@ class LocalProvider(BaseAIProvider):
             
             result_str = "\n".join(full_text).strip()
             logger.info(f"--- TRANSCRIPTION COMPLETE: Success ({len(result_str)} chars) ---")
+=======
+                timestamp = f"[{int(segment.start // 60):02d}:{int(segment.start % 60):02d}]"
+                full_text.append(f"{timestamp} {segment.text.strip()}")
+                
+                if i % 10 == 0 and i > 0:
+                    status_updater("transcribing", f"Обработано {i} фрагментов речи...")
+                
+            transcription = "\n".join(full_text).strip()
+            
+>>>>>>> f89b4176a9ea12e43e71c53c6ff04bc3f5d90149
             
             # Note: We don't do aggressive cleanup here because it causes SegFaults on some drivers.
             # Memory will be reclaimed during the next task's pre-cleanup or by GC naturally.
@@ -202,8 +213,11 @@ class LocalProvider(BaseAIProvider):
         except Exception as e:
             logger.error(f"Local transcription error: {e}")
             trace.log_error("transcription", str(e))
+<<<<<<< HEAD
             # if self.device == "cuda":
             #     await self._cleanup_memory()
+=======
+>>>>>>> f89b4176a9ea12e43e71c53c6ff04bc3f5d90149
             raise e
 
     async def _ensure_model_exists(self, client: ollama.Client):
