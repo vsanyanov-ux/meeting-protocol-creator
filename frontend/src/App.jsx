@@ -15,8 +15,7 @@ import {
   Languages,
   Server,
   Wifi,
-  Cpu,
-  Monitor
+  Cpu
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import protocolLogo from './assets/protocolist-logo.png';
@@ -37,8 +36,20 @@ const App = () => {
   const [systemInfo, setSystemInfo] = useState({ location: 'Загрузка...', default_provider: 'yandex', provider_name: 'Яндекс Cloud', is_online: false });
   const [selectedProvider, setSelectedProvider] = useState('local');
   const [isBackendOnline, setIsBackendOnline] = useState(false);
+  const [sessionId, setSessionId] = useState(null);
+  const [shouldSendEmail, setShouldSendEmail] = useState(true);
   const fileInputRef = useRef(null);
   const backendFailCount = useRef(0);
+
+  // Initialize Session ID
+  useEffect(() => {
+    let sid = localStorage.getItem('protocolist_session_id');
+    if (!sid) {
+      sid = `sid-${Math.random().toString(36).substr(2, 9)}-${Date.now().toString(36)}`;
+      localStorage.setItem('protocolist_session_id', sid);
+    }
+    setSessionId(sid);
+  }, []);
 
   // Fetch system info on mount
   useEffect(() => {
@@ -107,7 +118,9 @@ const App = () => {
         recipientEmail, 
         targetProvider, 
         isFallback ? fileId : null, 
-        forceCpu
+        forceCpu,
+        sessionId,
+        shouldSendEmail
       );
       if (!isFallback) setFileId(result.file_id);
       setStatus({ status: 'starting', message: 'Перезапуск с новыми параметрами...' });
@@ -304,6 +317,7 @@ const App = () => {
                     </div>
                   </div>
 
+
                   <div className="input-field-group" style={{ marginBottom: '1.5rem' }}>
                     <label style={{ display: 'block', marginBottom: '0.75rem', fontSize: '0.9rem', fontWeight: 500, color: 'var(--text-muted)' }}>
                       Отправить готовый протокол на email:
@@ -318,6 +332,39 @@ const App = () => {
                         className="glass-input"
                         style={{ width: '100%', paddingLeft: '3rem', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: 'white', height: '3.5rem' }}
                       />
+                    </div>
+                    
+                    <div 
+                      onClick={() => setShouldSendEmail(!shouldSendEmail)}
+                      style={{ 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        gap: '0.75rem', 
+                        marginTop: '1rem', 
+                        cursor: 'pointer',
+                        userSelect: 'none',
+                        padding: '0.5rem',
+                        borderRadius: '8px',
+                        transition: 'background 0.2s',
+                      }}
+                      className="hover-bg-glass"
+                    >
+                      <div style={{ 
+                        width: '20px', 
+                        height: '20px', 
+                        borderRadius: '4px', 
+                        border: '2px solid var(--primary)', 
+                        display: 'flex', 
+                        alignItems: 'center', 
+                        justifyContent: 'center',
+                        background: shouldSendEmail ? 'var(--primary)' : 'transparent',
+                        transition: 'all 0.2s'
+                      }}>
+                        {shouldSendEmail && <CheckCircle2 size={14} color="white" />}
+                      </div>
+                      <span style={{ fontSize: '0.85rem', color: shouldSendEmail ? 'white' : 'var(--text-muted)' }}>
+                        Отправить результат на почту
+                      </span>
                     </div>
                   </div>
                   
@@ -402,10 +449,10 @@ const App = () => {
                   />
                   <StatusStep 
                     title="Отправка" 
-                    desc="Формируем DOCX и отправляем на email" 
+                    desc={!shouldSendEmail && currentStepIndex() > 4 ? "Отправка пропущена (опционально)" : "Формируем DOCX и отправляем на email"} 
                     icon={<Mail size={18} />}
                     isActive={status?.status === 'emailing'}
-                    isComplete={currentStepIndex() > 5}
+                    isComplete={currentStepIndex() > 5 || (!shouldSendEmail && currentStepIndex() > 4)}
                   />
                 </div>
 

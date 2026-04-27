@@ -11,6 +11,7 @@ from loguru import logger
 
 from .base import BaseAIProvider
 from exceptions import ProviderQuotaError, ProviderNetworkError
+from langfuse_client import get_prompt
 
 class YandexProvider(BaseAIProvider):
     def __init__(self, api_key: str, folder_id: str, 
@@ -87,15 +88,19 @@ class YandexProvider(BaseAIProvider):
             
             for i, chunk_file in enumerate(chunk_files):
                 status_updater("transcribing", f"Transcribing segment {i+1} of {len(chunk_files)}...")
+                # Calculate approximate timestamp based on 25s chunks
+                seconds = i * 25
+                timestamp = f"[{seconds // 60:02d}:{seconds % 60:02d}]"
+                
                 chunk_path = os.path.join(chunk_prefix, chunk_file)
                 with open(chunk_path, "rb") as f:
                     chunk_bytes = f.read()
                 
                 part = await self._transcribe_short(chunk_bytes)
                 if part:
-                    transcription_parts.append(part)
+                    transcription_parts.append(f"{timestamp} {part}")
             
-            return " ".join(transcription_parts)
+            return "\n".join(transcription_parts)
         except Exception as e:
             logger.error(f"Chunking/Transcription error: {e}")
             if trace: trace.end_span("transcription_chunked", {"error": str(e)}, level="ERROR")
@@ -203,9 +208,16 @@ class YandexProvider(BaseAIProvider):
                     for chunk in chunks:
                         text = chunk.get("alternatives", [{}])[0].get("text", "").strip()
                         if text:
-                            full_text.append(text)
+                            # Extract startTime (format is usually "12.340s")
+                            start_str = chunk.get("startTime", "0s").replace("s", "")
+                            try:
+                                start_sec = int(float(start_str))
+                                timestamp = f"[{start_sec // 60:02d}:{start_sec % 60:02d}]"
+                            except:
+                                timestamp = "[00:00]"
+                            full_text.append(f"{timestamp} {text}")
                             
-                    return " ".join(full_text).strip()
+                    return "\n".join(full_text).strip()
             except requests.exceptions.RequestException as e:
                 logger.warning(f"Status check connection issue (attempt {attempts}): {e}")
                 
@@ -214,12 +226,12 @@ class YandexProvider(BaseAIProvider):
 
     async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
-        system_text = (
-            "Ты — ведущий эксперт по техническому документообороту и промышленному инжинирингу. Твоя задача — составить официальный протокол совещания на основе расшифровки.\n\n"
+        fallback_system = (
+            "Ты — профессиональный специалист по ведению протоколов совещаний. Твоя задача — составить официальный протокол на основе расшифровки.\n\n"
             "ОБЯЗАТЕЛЬНЫЕ ТРЕБОВАНИЯ:\n"
-            "1. ЯЗЫК: ВЕСЬ ответ должен быть СТРОГО на РУССКОМ языке. Использование английского языка ЗАПРЕЩЕНО (кроме технических кодов и брендов).\n"
-            "2. СОХРАННОСТЬ ДАННЫХ: Обязательно сохраняй технические маркировки, артикулы, названия сплавов, коды изделий (например: марки стали 08Х18Н10Т, ГОСТы, чертежи).\n"
-            "3. ТОЧНОСТЬ: Будь точен в числовых параметрах и единицах измерения.\n"
+            "1. ЯЗЫК: ВЕСЬ ответ должен быть СТРОГО на РУССКОМ языке.\n"
+            "2. ТОЧНОСТЬ: Сохраняй все важные детали, имена, даты, цифры и ключевые термины. Не выдумывай факты, которых нет в тексте.\n"
+            "3. СТРУКТУРА: Соблюдай четкую иерархию заголовков.\n"
             "4. ТАБЛИЦА ПОРУЧЕНИЙ: Секцию 'Принятые решения и Поручения' ОБЯЗАТЕЛЬНО оформляй в виде Markdown-таблицы. ЗАПРЕЩЕНО использовать списки для задач.\n\n"
             "СТРУКТУРА ОТВЕТА:\n"
             "## Общая информация\n"
@@ -233,9 +245,16 @@ class YandexProvider(BaseAIProvider):
             "## Нерешенные вопросы\n\n"
             "ПИШИ ТОЛЬКО НА РУССКОМ. БУДЬ ЛАКОНИЧНЫМ И СТРОГИМ."
         )
+        system_text = get_prompt("meeting_create_protocol", fallback=fallback_system)
+        
+        user_prompt = get_prompt("meeting_create_protocol_user", fallback="Внимательно изучи {{source_type}} и {{action_type}} НА РУССКОМ ЯЗЫКЕ:\n\n{{text}}")
+        user_text = user_prompt.replace("{{text}}", transcription)\
+                               .replace("{{source_type}}", "расшифровку")\
+                               .replace("{{action_type}}", "составь подробный протокол")
+
         messages = [
             {"role": "system", "text": system_text},
-            {"role": "user", "text": f"Внимательно изучи расшифровку и составь подробный протокол НА РУССКОМ ЯЗЫКЕ:\n\n{transcription}"}
+            {"role": "user", "text": user_text}
         ]
         prompt = {
             "modelUri": f"gpt://{self.folder_id}/{self.gpt_model}",
@@ -281,7 +300,7 @@ class YandexProvider(BaseAIProvider):
 
     async def verify_protocol(self, transcription: str, protocol: str) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
-        system_text = (
+        fallback_system = (
             "Ты — строгий корпоративный аудитор. Твоя задача: Сравнить РАСШИФРОВКУ и готовый ПРОТОКОЛ.\n"
             "ОБЯЗАТЕЛЬНО пиши отчет ТОЛЬКО НА РУССКОМ ЯЗЫКЕ.\n"
             "Найди любые расхождения, пропущенные поручения или фактические ошибки.\n"
@@ -301,9 +320,14 @@ class YandexProvider(BaseAIProvider):
             "}\n"
             "```"
         )
+        system_text = get_prompt("meeting_verify_protocol", fallback=fallback_system)
+        
+        user_prompt = get_prompt("meeting_verify_protocol_user", fallback="РАСШИФРОВКА:\n{{transcription}}\n\nПРОТОКОЛ:\n{{protocol}}")
+        user_text = user_prompt.replace("{{transcription}}", transcription).replace("{{protocol}}", protocol)
+
         messages = [
             {"role": "system", "text": system_text},
-            {"role": "user", "text": f"РАСШИФРОВКА:\n{transcription}\n\nПРОТОКОЛ:\n{protocol}"}
+            {"role": "user", "text": user_text}
         ]
         prompt = {
             "modelUri": f"gpt://{self.folder_id}/{self.gpt_model}",
@@ -325,11 +349,10 @@ class YandexProvider(BaseAIProvider):
             if response.status_code == 200:
                 data = response.json()
                 text = data["result"]["alternatives"][0]["message"]["text"]
-                result["verification_report"] = text
                 
                 # Попытка извлечь JSON с оценками
+                import re
                 try:
-                    import re
                     json_match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
                     if json_match:
                         score_data = json.loads(json_match.group(1))
@@ -337,6 +360,13 @@ class YandexProvider(BaseAIProvider):
                         logger.info(f"✅ Auditor scores extracted: {result['scores']}")
                 except Exception as je:
                     logger.warning(f"Could not parse auditor scores: {je}")
+
+                # Очистка текста от JSON и технических заголовков для пользователя
+                # 1. Удаляем блок ```json ... ```
+                clean_report = re.sub(r"```json\s*\{.*?\}\s*```", "", text, flags=re.DOTALL)
+                # 2. Удаляем заголовки типа "### JSON для системы" или просто "JSON"
+                clean_report = re.sub(r"###?\s*JSON.*?\n", "", clean_report, flags=re.IGNORECASE)
+                result["verification_report"] = clean_report.strip()
 
                 usage = data["result"].get("usage", {})
                 result["input_tokens"] = usage.get("inputTextTokens")
@@ -346,44 +376,3 @@ class YandexProvider(BaseAIProvider):
             
         return result
 
-    async def format_transcript_with_ai(self, transcription: str) -> Dict[str, Any]:
-        headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
-        system_text = (
-            "Ты — эксперт по лингвистическому анализу диалогов. Твоя задача: превратить сплошной текст расшифровки в структурированный диалог.\n\n"
-            "ПРАВИЛА:\n"
-            "1. Распознавай смену спикеров по смыслу, вопросам и реакции. \n"
-            "2. ОСОБОЕ ВНИМАНИЕ: Короткие наводящие вопросы ('Что дальше?', 'Как это?', 'Какой капкан?') почти всегда принадлежат ДРУГОМУ участнику (Участнику 1), который ведет беседу.\n"
-            "3. Используй метки: 'Участник 1:', 'Участник 2:'. \n"
-            "4. НЕ МЕНЯЙ СЛОВА. Только расставляй переносы строк, знаки препинания и метки спикеров.\n\n"
-            "ПРИМЕР:\n"
-            "Вход: привет как дела хорошо а у тебя тоже отлично что нового\n"
-            "Выход:\n"
-            "Участник 1: Привет. Как дела?\n"
-            "Участник 2: Хорошо. А у тебя?\n"
-            "Участник 1: Тоже отлично. Что нового?"
-        )
-        messages = [
-            {"role": "system", "text": system_text},
-            {"role": "user", "text": f"РАСШИФРОВКА (сплошной текст):\n{transcription}"}
-        ]
-        prompt = {
-            "modelUri": f"gpt://{self.folder_id}/{self.gpt_model}",
-            "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": "4000"},
-            "messages": messages
-        }
-        
-        result = {"formatted_text": transcription, "input_tokens": 0, "output_tokens": 0}
-        try:
-            response = await asyncio.to_thread(requests.post, self.gpt_url, headers=headers, json=prompt, timeout=120)
-            if response.status_code == 200:
-                data = response.json()
-                result["formatted_text"] = data["result"]["alternatives"][0]["message"]["text"]
-                usage = data["result"].get("usage", {})
-                result["input_tokens"] = usage.get("inputTextTokens")
-                result["output_tokens"] = usage.get("completionTokens")
-            else:
-                logger.error(f"Transcript formatting error: {response.text}")
-        except Exception as e:
-            logger.error(f"Transcript formatting crash: {e}")
-            
-        return result

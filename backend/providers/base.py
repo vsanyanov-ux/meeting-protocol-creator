@@ -44,10 +44,3 @@ class BaseAIProvider(ABC):
         """
         pass
 
-    @abstractmethod
-    async def format_transcript_with_ai(self, transcription: str) -> Dict[str, Any]:
-        """
-        Add speaker labels to raw text using LLM context.
-        Returns dict with: formatted_text (str), input_tokens (int), output_tokens (int)
-        """
-        pass
