@@ -152,9 +152,9 @@ class LocalProvider(BaseAIProvider):
         status_updater: Callable[[str, str], None],
         trace: Any
     ) -> Optional[str]:
-        if self.device == "cuda":
-            await self._unload_ollama_models()
-            await self._cleanup_memory()
+        # if self.device == "cuda":
+        #     await self._unload_ollama_models()
+        #     await self._cleanup_memory()
             
         status_updater("transcribing", f"Loading Whisper ({self.whisper_model_size})...")
         
@@ -185,8 +185,8 @@ class LocalProvider(BaseAIProvider):
             transcription = "\n".join(full_text).strip()
             
             # Освобождаем видеопамять от Whisper перед запуском Ollama
-            if self.device == "cuda":
-                await self._cleanup_memory()
+            # if self.device == "cuda":
+            #     await self._cleanup_memory()
             
             return transcription
         except Exception as e:
