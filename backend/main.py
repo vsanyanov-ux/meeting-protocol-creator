@@ -120,7 +120,15 @@ setup_cuda_dlls()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic
+    # Startup logic: Clean up stale GPU lock from previous crashes
+    lock_path = os.path.join("storage", "gpu.lock")
+    if os.path.exists(lock_path):
+        try:
+            os.remove(lock_path)
+            logger.warning("--- STARTUP: Cleaned up stale GPU lock file from previous session ---")
+        except Exception as e:
+            logger.error(f"--- STARTUP: Failed to remove stale GPU lock: {e} ---")
+
     provider_type = os.getenv("AI_PROVIDER", "yandex").lower()
     logger.info(f"Startup OK. Default provider: {provider_type}. CORS allowed origins: {ALLOWED_ORIGINS}")
     yield
