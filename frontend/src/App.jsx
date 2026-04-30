@@ -328,13 +328,15 @@ const App = () => {
                     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                       <ProviderOption 
                         id="yandex" 
-                        name="YandexGPT" 
+                        name="Онлайн" 
+                        subtitle="Открытый контур"
                         selected={selectedProvider === 'yandex'} 
                         onClick={() => setSelectedProvider('yandex')} 
                       />
                       <ProviderOption 
                         id="local" 
-                        name="Qwen" 
+                        name="Локально" 
+                        subtitle="Закрытый контур"
                         selected={selectedProvider === 'local'} 
                         onClick={() => setSelectedProvider('local')} 
                       />
@@ -342,7 +344,10 @@ const App = () => {
                   </div>
 
 
-                  <div className="input-field-group" style={{ marginBottom: '1.5rem' }}>
+                  <div 
+                    className="input-field-group" 
+                    style={{ marginBottom: '1.5rem' }}
+                  >
                     <label style={{ display: 'block', marginBottom: '0.75rem', fontSize: '0.9rem', fontWeight: 500, color: 'var(--text-muted)' }}>
                       Отправить готовый протокол на email:
                     </label>
@@ -472,11 +477,13 @@ const App = () => {
                     isComplete={currentStepIndex() > 4}
                   />
                   <StatusStep 
-                    title="Отправка" 
-                    desc={!shouldSendEmail && currentStepIndex() > 4 ? "Отправка пропущена (опционально)" : "Формируем DOCX и отправляем на email"} 
-                    icon={<Mail size={18} />}
+                    title="Завершение" 
+                    desc={status?.email_error ? "Протокол готов, но ошибка почты" : (status?.status === 'error' ? "Ошибка выполнения" : "Формирование DOCX и отправка email")} 
+                    icon={<CheckCircle2 size={18} />}
                     isActive={status?.status === 'emailing'}
-                    isComplete={currentStepIndex() > 5 || (!shouldSendEmail && currentStepIndex() > 4)}
+                    isComplete={currentStepIndex() > 5 && !status?.email_error && !status?.error}
+                    isWarning={status?.email_error}
+                    isError={status?.status === 'error'}
                   />
                 </div>
 
@@ -487,9 +494,24 @@ const App = () => {
                     style={{ marginTop: '3rem' }}
                   >
                     <div style={{ textAlign: 'center', color: 'var(--secondary)', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '1rem' }}>
-                      <CheckCircle2 size={48} />
-                      <h3 style={{ fontSize: '1.5rem' }}>Протокол готов!</h3>
-                      <p style={{ color: 'var(--text-muted)' }}>Файл сформирован и доступен для скачивания.</p>
+                      <CheckCircle2 size={48} color={status?.email_error ? "#fbbf24" : "var(--secondary)"} />
+                      <h3 style={{ fontSize: '1.5rem', color: status?.email_error ? "#fbbf24" : "white" }}>
+                        {status?.email_error ? "Протокол готов (с ошибкой почты)" : "Протокол готов!"}
+                      </h3>
+                      <div style={{ 
+                        margin: '1.5rem 0',
+                        padding: '1.5rem',
+                        borderRadius: '16px',
+                        border: status?.email_error ? '2px solid #fbbf24' : '1px solid rgba(255,255,255,0.1)',
+                        background: status?.email_error ? 'rgba(251, 191, 36, 0.1)' : 'rgba(255,255,255,0.05)',
+                        maxWidth: '90%',
+                        textAlign: 'center',
+                        boxShadow: status?.email_error ? '0 0 20px rgba(251, 191, 36, 0.1)' : 'none'
+                      }}>
+                        <p style={{ color: status?.email_error ? "#fde68a" : "var(--text-muted)", fontSize: '1rem', margin: 0, lineHeight: '1.6', fontWeight: 500 }}>
+                          {status?.message || "Файл сформирован и доступен для скачивания."}
+                        </p>
+                      </div>
                       <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem', flexWrap: 'wrap', justifyContent: 'center' }}>
                         <a 
                           href={`${API_BASE_URL}/download/${fileId}`} 
@@ -579,20 +601,31 @@ const App = () => {
   );
 };
 
-const StatusStep = ({ title, desc, icon, isActive, isComplete }) => (
-  <div className={`status-step ${isActive ? 'active' : ''}`} style={{ opacity: isComplete || isActive ? 1 : 0.4 }}>
-    <div className={`step-icon ${isComplete ? 'complete' : isActive ? 'active' : ''}`}>
-      {isComplete ? <CheckCircle2 size={18} color="white" /> : icon}
-    </div>
-    <div className="step-content">
-      <div className="step-title" style={{ color: isComplete ? 'var(--secondary)' : isActive ? 'var(--primary)' : 'inherit' }}>
-        {title}
+const StatusStep = ({ title, desc, icon, isActive, isComplete, isError, isWarning }) => {
+  // Determine state
+  const stepState = isError ? 'error' : isWarning ? 'warning' : isComplete ? 'complete' : isActive ? 'active' : '';
+  
+  return (
+    <div className={`status-step ${isActive ? 'active' : ''}`} style={{ opacity: isComplete || isActive || isError || isWarning ? 1 : 0.4 }}>
+      <div className={`step-icon ${stepState}`} style={{ 
+        background: isError ? 'rgba(239, 68, 68, 0.2)' : isWarning ? 'rgba(251, 191, 36, 0.2)' : undefined,
+        borderColor: isError ? '#ef4444' : isWarning ? '#fbbf24' : undefined,
+        color: isError ? '#ef4444' : isWarning ? '#fbbf24' : undefined,
+        borderWidth: isError || isWarning ? '2px' : '1px',
+        borderStyle: 'solid'
+      }}>
+        {isComplete ? <CheckCircle2 size={18} color="white" /> : (isError || isWarning) ? <AlertCircle size={18} /> : icon}
       </div>
-      <div className="step-desc">{desc}</div>
+      <div className="step-content">
+        <div className="step-title" style={{ color: isComplete ? 'var(--secondary)' : isError ? '#ef4444' : isWarning ? '#fbbf24' : isActive ? 'var(--primary)' : 'inherit' }}>
+          {title}
+        </div>
+        <div className="step-desc" style={{ color: isError ? '#fca5a5' : isWarning ? '#fde68a' : 'var(--text-muted)' }}>{desc}</div>
+      </div>
+      {isActive && <Loader2 className="animate-spin" size={18} color="var(--primary)" />}
     </div>
-    {isActive && <Loader2 className="animate-spin" size={18} color="var(--primary)" />}
-  </div>
-);
+  );
+};
 
 const Accordion = ({ title, icon, content, type }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -633,7 +666,7 @@ const Accordion = ({ title, icon, content, type }) => {
   );
 };
 
-const ProviderOption = ({ id, name, selected, onClick }) => (
+const ProviderOption = ({ id, name, subtitle, selected, onClick }) => (
   <button 
     onClick={onClick}
     style={{ 
@@ -650,7 +683,7 @@ const ProviderOption = ({ id, name, selected, onClick }) => (
       display: 'flex',
       flexDirection: 'column',
       alignItems: 'center',
-      gap: '0.5rem'
+      gap: '0.25rem'
     }}
   >
     <div style={{ 
@@ -660,6 +693,7 @@ const ProviderOption = ({ id, name, selected, onClick }) => (
       alignItems: 'center',
       justifyContent: 'center',
       borderRadius: id === 'yandex' ? '50%' : '6px',
+      marginBottom: '0.25rem',
       overflow: 'hidden'
     }}>
       <img 
@@ -669,11 +703,12 @@ const ProviderOption = ({ id, name, selected, onClick }) => (
           width: '100%', 
           height: '100%', 
           objectFit: id === 'yandex' ? 'cover' : 'contain',
-          transform: id === 'yandex' ? 'scale(1.05)' : 'none' // Slight zoom to definitely hide white edges
+          transform: id === 'yandex' ? 'scale(1.05)' : 'none'
         }}
       />
     </div>
-    {name}
+    <span style={{ fontSize: '0.85rem' }}>{name}</span>
+    {subtitle && <span style={{ fontSize: '0.65rem', opacity: 0.6 }}>{subtitle}</span>}
   </button>
 );
 

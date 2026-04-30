@@ -132,11 +132,11 @@ async def lifespan(app: FastAPI):
     provider_type = os.getenv("AI_PROVIDER", "yandex").lower()
     logger.info(f"Startup OK. Default provider: {provider_type}. CORS allowed origins: {ALLOWED_ORIGINS}")
     yield
-    logger.info("Shutting down Протоколист v4.2.1 🚀 API")
+    logger.info("Shutting down Протоколист v5.0.0 🚀 API")
 
 app = FastAPI(
     title="Протоколист API",
-    version="5.0.0",
+    version="5.1.0",
     lifespan=lifespan
 )
 
@@ -323,7 +323,8 @@ async def get_status(file_id: str):
         "message": status.get("message"),
         "docx_path": status.get("docx_path"),
         "transcription": status.get("transcription"),
-        "verification_report": status.get("verification_report")
+        "verification_report": status.get("verification_report"),
+        "email_error": status.get("email_error", False)
     }
 
 @app.get("/download/{file_id}")
@@ -565,7 +566,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                     norm_res = await asyncio.to_thread(normalize_file, local_path, file_id)
                     trace.end_span("normalization", norm_res)
                 except Exception as e:
-                    err_msg = f"Normalization crash: {str(e)}"
+                    err_msg = f"Ошибка нормализации: {str(e)}"
                     logger.error(err_msg)
                     trace.log_error("normalization", err_msg, traceback.format_exc())
                     raise e
@@ -577,21 +578,24 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
 
                 transcription = None
 
+                def status_updater(status: str, msg: str):
+                    status_manager.update(file_id, {"status": status, "message": msg})
+
                 if norm_res["type"] == "text":
-                    status_manager.update(file_id, {"status": "transcribing", "message": "Text document detected. Bypassing audio transcription..."})
+                    status_updater("transcribing", "Text document detected. Bypassing audio transcription...")
                     transcription = norm_res["content"]
                     
                 elif norm_res["type"] == "audio":
-                    def status_updater(status: str, msg: str):
-                        status_manager.update(file_id, {"status": status, "message": msg})
-                    
                     try:
+                            # Начинаем span для транскрипции
+                            trace.start_span("transcription", as_type="generation")
                             transcription = await current_provider.transcribe_audio(
                                 audio_path=norm_res["path"], 
                                 file_id=file_id, 
                                 status_updater=status_updater, 
                                 trace=trace
                             )
+                            # log_stt будет вызван ниже и обновит активный span
                     except HardwareError as he:
                         logger.warning(f"GPU FAILURE: {he}. Attempting automatic fallback to CPU...")
                         status_updater("transcribing", "GPU (CUDA) is unavailable or crashed. Automatically falling back to CPU mode...")
@@ -642,7 +646,8 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                 status_manager.update(file_id, {"status": "generating", "message": "Analyzing meeting content and generating protocol..."})
                 
                 try:
-                    trace.start_span("Create Protocol")
+                    # Начинаем span как генерацию, чтобы Langfuse считал задержку правильно
+                    trace.start_span("Create Protocol", as_type="generation")
                     gpt_result = await current_provider.create_protocol(transcription, status_updater=status_updater, file_id=file_id)
                     protocol_text = gpt_result["text"]
 
@@ -654,7 +659,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                         latency_ms=gpt_result["latency_ms"],
                         input_tokens=gpt_result["input_tokens"],
                         output_tokens=gpt_result["output_tokens"],
-                        name="Create Protocol Generation"
+                        name="Create Protocol"
                     )
                     trace.end_span("Create Protocol", {"success": bool(protocol_text)})
                 except Exception as e:
@@ -672,18 +677,22 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                 status_manager.update(file_id, {"status": "verifying", "message": "AI-Auditor is verifying protocol accuracy..."})
                 
                 try:
+                    # Начинаем span как генерацию
+                    trace.start_span("Audit Protocol", as_type="generation")
                     verify_res = await current_provider.verify_protocol(transcription, protocol_text)
                     status_manager.update(file_id, {"verification_report": verify_res["verification_report"]})
                     
-                    # Log verification to Langfuse as a separate generation
+                    # Log verification to Langfuse (updates active span)
                     trace.log_generation(
                         input_messages=[{"role": "user", "content": "Verify protocol"}],
                         output_text=verify_res["verification_report"],
                         model=f"{current_provider.model_name}_auditor",
                         latency_ms=verify_res.get("latency_ms", 0),
                         input_tokens=verify_res["input_tokens"],
-                        output_tokens=verify_res["output_tokens"]
+                        output_tokens=verify_res["output_tokens"],
+                        name="Audit Protocol"
                     )
+                    trace.end_span("Audit Protocol")
                     
                     # --- Langfuse: отправляем автоматические оценки от Аудитора ---
                     if "scores" in verify_res and verify_res["scores"]:
@@ -711,7 +720,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                 # E. Send Email (Skip if no SMTP configured or user opted out)
                 smtp_user = os.getenv("SMTP_USER")
                 if smtp_user and should_send_email:
-                    status_manager.update(file_id, {"status": "emailing", "message": "Sending protocol to your email..."})
+                    status_manager.update(file_id, {"status": "emailing", "message": "Отправляем протокол на вашу почту..."})
                     trace.start_span("email_send")
                     # Recipient logic: 1. Passed manually, 2. Env var, 3. Default hardcoded
                     recipient = recipient_email or os.getenv("RECIPIENT_EMAIL", "vanyanov@yandex.ru")
@@ -734,22 +743,24 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                     if success:
                         status_manager.update(file_id, {
                             "status": "completed", 
-                            "message": "Success! The protocol has been sent to your email.",
+                            "message": "Успех! Протокол отправлен на вашу почту.",
                             "docx_path": docx_path
                         })
                         trace.finish("completed", {"docx_path": docx_path, "email_sent": True})
                     else:
-                        # IMPORTANT: Even if email fails, we mark as completed so user can download in UI
+                        # ОШИБКА: Если пользователь просил email и он не ушел
                         status_manager.update(file_id, {
                             "status": "completed", 
-                            "message": "Protocol is ready! (Note: Email delivery failed, please download it here).",
-                            "docx_path": docx_path
+                            "message": "Протокол сформирован, но произошла ошибка при отправке email.",
+                            "docx_path": docx_path,
+                            "email_error": True
                         })
-                        trace.finish("completed_with_email_error", {"docx_path": docx_path, "email_sent": False})
+                        # В Langfuse это все равно ошибка
+                        trace.finish("completed_with_email_error", {"docx_path": docx_path, "email_sent": False}, level="ERROR")
                 else:
                     status_manager.update(file_id, {
                         "status": "completed", 
-                        "message": f"Success! Protocol generated at {docx_path} (Email skipped, SMTP not configured).",
+                        "message": "Успех! Протокол успешно сформирован (отправка email пропущена).",
                         "docx_path": docx_path
                     })
                     trace.finish("completed", {"docx_path": docx_path, "email_sent": False})
@@ -761,7 +772,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
 
     except Exception as e:
         logger.error(f"Pipeline error for {file_id}: {e}")
-        status_manager.update(file_id, {"status": "error", "message": f"An unexpected error occurred: {str(e)}"})
+        status_manager.update(file_id, {"status": "error", "message": f"Произошла непредвиденная ошибка: {str(e)}"})
     finally:
         pass
 

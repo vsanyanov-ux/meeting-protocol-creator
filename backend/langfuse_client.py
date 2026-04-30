@@ -10,6 +10,7 @@ import datetime
 import uuid
 from typing import Optional, Any, Dict, Union
 from loguru import logger
+from langfuse import propagate_attributes
 
 # Глобальный инстанс Langfuse
 _langfuse_instance = None
@@ -81,53 +82,52 @@ class PipelineTrace:
     def __enter__(self):
         if not self.lf: return self
         try:
-            # 1. Сначала включаем официальный метод проброса атрибутов трейса.
-            # Это гарантирует, что ВСЕ последующие наблюдения в этом контексте получат sessionId.
-            # self._prop_ctx = self.lf.propagate_attributes(
-            #     session_id=self.session_id,
-            #     trace_name=f"Meeting: {self.filename}",
-            #     tags=["meeting-protocol", self.provider]
-            # )
-            # if self._prop_ctx:
-            #     self._prop_ctx.__enter__()
+            # 1. Используем официальный метод проброса атрибутов трейса для SDK v4.
+            # Это устанавливает контекст для всех последующих OTel операций.
+            self._prop_ctx = propagate_attributes(
+                session_id=self.session_id,
+                user_id=self.metadata.get("email"),
+                metadata=self.metadata,
+                tags=["meeting-protocol", self.provider]
+            )
+            self._prop_ctx.__enter__()
 
-            # 2. Начинаем корневой span.
-            self._root_obs = self.lf.start_observation(
+            # 2. СОЗДАЕМ ТРЕЙС ЧЕРЕЗ LOW-LEVEL API.
+            # Это ГАРАНТИРУЕТ, что sessionId и userId будут на верхнем уровне JSON,
+            # что критично для появления данных в разделе Sessions в Langfuse UI.
+            try:
+                self.lf.api.ingestion.batch(
+                    batch=[{
+                        "id": uuid.uuid4().hex,
+                        "type": "trace-create",
+                        "timestamp": datetime.datetime.now().isoformat() + "Z",
+                        "body": {
+                            "id": self.trace_id,
+                            "name": "meeting_protocol_processing",
+                            "sessionId": self.session_id,
+                            "userId": self.metadata.get("email"),
+                            "metadata": {
+                                **self.metadata,
+                                "file_id": self.file_id,
+                                "filename": self.filename
+                            },
+                            "tags": ["meeting-protocol", self.provider]
+                        }
+                    }]
+                )
+            except Exception as le:
+                logger.debug(f"Low-level trace creation failed: {le}")
+
+            # 3. Начинаем корневой span через start_as_current_observation.
+            # Он автоматически привяжется к нашему trace_id из OTel контекста.
+            self._root_obs_ctx = self.lf.start_as_current_observation(
                 name="meeting_protocol_processing",
                 as_type="span",
+                trace_context={"trace_id": self.trace_id},
                 input={"filename": self.filename, "provider": self.provider},
-                metadata={
-                    "file_id": self.file_id,
-                    "started_at": datetime.datetime.now().isoformat(),
-                    **self.metadata
-                }
+                end_on_exit=False
             )
-
-            # 3. Принудительно устанавливаем атрибуты на корень через OTel
-            if self.session_id and self._root_obs and hasattr(self._root_obs, "_otel_span"):
-                try:
-                    self._root_obs._otel_span.set_attribute("session.id", self.session_id)
-                    self._root_obs._otel_span.set_attribute("user.id", self.metadata.get("email", "unknown"))
-                except:
-                    pass
-            
-            # 4. ФИНАЛЬНЫЙ ХАК: Используем низкоуровневое API для прямой регистрации трейса с Session ID.
-            # Это гарантирует, что даже если OTel даст сбой, Langfuse получит данные через API.
-            try:
-                from langfuse.api import TraceBody
-                self.lf.api.trace.create(
-                    body=TraceBody(
-                        id=self.trace_id,
-                        name=f"Meeting: {self.filename}",
-                        sessionId=self.session_id,
-                        userId=self.metadata.get("email"),
-                        metadata=self.metadata,
-                        input={"filename": self.filename, "provider": self.provider},
-                        tags=["meeting-protocol", self.provider]
-                    )
-                )
-            except Exception as ae:
-                logger.debug(f"Direct trace creation failed (not critical): {ae}")
+            self._root_obs = self._root_obs_ctx.__enter__()
 
             logger.info(f"Started Langfuse v4 trace: {self.trace_id} (Session: {self.session_id})")
             return self
@@ -140,15 +140,22 @@ class PipelineTrace:
         if exc_type:
             self.log_error("exception", str(exc_val))
         
+        # Завершаем трейс автоматически, если он еще не был завершен вручную
+        self.finish(status="error" if exc_type else "completed")
+
+        # Завершаем контекст корневого наблюдения
+        if hasattr(self, "_root_obs_ctx") and self._root_obs_ctx:
+            try:
+                self._root_obs_ctx.__exit__(exc_type, exc_val, exc_tb)
+            except:
+                pass
+
         # Завершаем контекст проброса атрибутов
         if self._prop_ctx:
             try:
                 self._prop_ctx.__exit__(exc_type, exc_val, exc_tb)
             except:
                 pass
-
-        # Завершаем трейс автоматически, если он еще не был завершен вручную
-        self.finish(status="error" if exc_type else "completed")
         
         if self.lf:
             self.lf.flush()
@@ -160,19 +167,24 @@ class PipelineTrace:
             "parent_observation_id": self._root_obs.id if self._root_obs else None
         }
 
-    def start_span(self, name: str, input_data: dict = None) -> Optional[Any]:
+    def start_span(self, name: str, input_data: dict = None, as_type: str = "span") -> Optional[Any]:
         if not self.lf or not self._root_obs: return None
         try:
-            # Вызываем start_observation на родителе (трейсе)
-            span = self._root_obs.start_observation(
+            # В SDK v4 для надежной привязки используем lf.start_observation с trace_context
+            span = self.lf.start_observation(
                 name=name,
-                as_type="span",
-                input=input_data or {}
+                as_type=as_type,
+                trace_context={
+                    "trace_id": self.trace_id,
+                    "parent_span_id": self._root_obs.id
+                },
+                input=input_data
             )
+            # ВАЖНО: Добавляем в список активных спанов для последующего закрытия/обновления
             self._active_spans[name] = span
             return span
         except Exception as e:
-            logger.error(f"Langfuse span error ({name}): {e}")
+            logger.error(f"Langfuse start_span error: {e}")
             return None
 
     def end_span(self, name: str, output_data: dict = None, level: str = "DEFAULT"):
@@ -224,20 +236,45 @@ class PipelineTrace:
             else:
                 gen_name = "Create Protocol"
 
-            start_t = datetime.datetime.now() - datetime.timedelta(milliseconds=latency_ms)
+            # Пытаемся найти активный спан с таким же именем, чтобы сохранить latency
+            # Если спана нет, создаем новый "fire and forget"
+            gen = self._active_spans.get(gen_name)
             
-            # Используем start_observation с as_type="generation"
-            gen = self._root_obs.start_observation(
-                name=gen_name,
-                as_type="generation",
-                model=model,
-                input=sanitized_messages,
-                usage_details=usage,
-                cost_details={"total": cost},
-                completion_start_time=start_t
-            )
-            gen.update(output=output_text)
-            gen.end()
+            if gen:
+                # Если это был обычный span, мы не можем сменить тип, 
+                # но мы можем обновить его данными генерации
+                gen.update(
+                    model=model,
+                    input=sanitized_messages,
+                    output=output_text,
+                    usage_details={"input": i_t, "output": o_t, "total": i_t + o_t},
+                    cost_details={"total": cost},
+                    session_id=self.session_id,
+                    sessionId=self.session_id
+                )
+                # Мы не закрываем его здесь, так как main.py вызовет trace.end_span()
+            else:
+                # В SDK v4 для гарантии привязки используем lf.start_observation с trace_context
+                start_t = datetime.datetime.now() - datetime.timedelta(milliseconds=latency_ms)
+                gen = self.lf.start_observation(
+                    name=gen_name,
+                    as_type="generation",
+                    trace_context={
+                        "trace_id": self.trace_id,
+                        "parent_span_id": self._root_obs.id
+                    },
+                    model=model,
+                    input=sanitized_messages,
+                    usage_details=usage,
+                    cost_details={"total": cost},
+                    completion_start_time=start_t
+                )
+                gen.update(
+                    output=output_text,
+                    session_id=self.session_id,
+                    sessionId=self.session_id
+                )
+                gen.end()
             
             self.total_cost += cost
             self.lf.flush()
@@ -250,16 +287,40 @@ class PipelineTrace:
             d_sec = float(duration_sec) if duration_sec is not None else 0.0
             cost = float(d_sec * YANDEX_PRICING["speechkit_stt"])
             
-            gen = self._root_obs.start_observation(
-                name="transcription",
-                as_type="generation",
-                model=model,
-                input={"duration_sec": d_sec},
-                usage_details={"unit": "SECONDS", "input": int(d_sec)},
-                cost_details={"total": cost}
-            )
-            gen.update(output="[Audio Transcription]")
-            gen.end()
+            # Пытаемся найти активный спан 'transcription'
+            gen = self._active_spans.get("transcription")
+            
+            if gen:
+                gen.update(
+                    model=model,
+                    input={"duration_sec": d_sec},
+                    output="[Audio Transcription]",
+                    usage_details={"unit": "SECONDS", "input": int(d_sec), "total": int(d_sec)},
+                    cost_details={"total": cost},
+                    session_id=self.session_id,
+                    sessionId=self.session_id
+                )
+                # Мы не закрываем его здесь, так как main.py вызовет trace.end_span()
+            else:
+                # В SDK v4 для гарантии привязки используем lf.start_observation с trace_context
+                gen = self.lf.start_observation(
+                    name="transcription",
+                    as_type="generation",
+                    trace_context={
+                        "trace_id": self.trace_id,
+                        "parent_span_id": self._root_obs.id
+                    },
+                    model=model,
+                    input={"duration_sec": d_sec},
+                    usage_details={"unit": "SECONDS", "input": int(d_sec)},
+                    cost_details={"total": cost}
+                )
+                gen.update(
+                    output="[Audio Transcription]",
+                    session_id=self.session_id,
+                    sessionId=self.session_id
+                )
+                gen.end()
             
             self.total_cost += cost
             self.lf.flush()
@@ -294,19 +355,31 @@ class PipelineTrace:
 
 
 
-    def finish(self, status: str = "completed", output: dict = None):
+    def finish(self, status: str = "completed", output: dict = None, level: Optional[str] = None):
         if not self.lf or not self._root_obs: return
         # Защита от двойного завершения
         if hasattr(self, "_finished") and self._finished: return
         
         try:
+            # Закрываем все висящие спаны
+            for name, span in list(self._active_spans.items()):
+                try:
+                    span.end()
+                    logger.debug(f"Auto-closed hanging span: {name}")
+                except:
+                    pass
+            self._active_spans.clear()
+
             res = output or {"status": status}
             
             # Обновляем корневой спан
+            # Если level не передан, определяем его по статусу (completed -> INFO, остальное -> ERROR)
+            final_level = level or ("INFO" if status == "completed" else "ERROR")
+            
             self._root_obs.update(
                 output=res, 
                 cost_details={"total": self.total_cost},
-                level="INFO" if status == "completed" else "ERROR"
+                level=final_level
             )
             self._root_obs.end()
             

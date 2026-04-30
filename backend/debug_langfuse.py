@@ -2,6 +2,9 @@ import os
 import sys
 import uuid
 from loguru import logger
+from dotenv import load_dotenv
+
+load_dotenv()
 
 try:
     from langfuse import Langfuse

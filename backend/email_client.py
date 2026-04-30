@@ -1,8 +1,27 @@
 import os
 import smtplib
+import time
+import socket
 from email.message import EmailMessage
 from email.utils import make_msgid, formatdate
 from loguru import logger
+
+def retry_on_timeout(retries=2, delay=1):
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            last_error = None
+            for i in range(retries):
+                try:
+                    return func(*args, **kwargs)
+                except (socket.timeout, TimeoutError, ConnectionRefusedError) as e:
+                    last_error = e
+                    logger.warning(f"SMTP connection attempt {i+1} failed (timeout/offline): {e}. Retrying in {delay}s...")
+                    time.sleep(delay)
+                except Exception as e:
+                    raise e
+            raise last_error
+        return wrapper
+    return decorator
 
 def send_email(recipient_email: str, subject: str, body: str, attachment_path: str):
     """Send an email with an attachment and HTML alternative."""
@@ -69,12 +88,13 @@ def send_email(recipient_email: str, subject: str, body: str, attachment_path: s
                 filename=file_name
             )
 
-    try:
-        logger.info(f"Connecting to {smtp_host}:{smtp_port}...")
+    # Internal worker for retries
+    def _do_send():
+        logger.info(f"Connecting to {smtp_host}:{smtp_port} (timeout=10s)...")
         if smtp_port == 465:
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30)
+            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=10)
         else:
-            server = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
+            server = smtplib.SMTP(smtp_host, smtp_port, timeout=10)
             server.starttls()
             
         with server:
@@ -84,6 +104,16 @@ def send_email(recipient_email: str, subject: str, body: str, attachment_path: s
             server.send_message(msg)
             logger.info(f"Email successfully sent to {recipient_email}")
             return True
+
+    try:
+        # Wrap with retries for transient network issues
+        return retry_on_timeout(retries=2, delay=2)(_do_send)()
+    except (socket.timeout, TimeoutError) as e:
+        logger.warning(f"SMTP connection timed out for {recipient_email}. Network might be offline or blocking port {smtp_port}.")
+        return False
+    except ConnectionRefusedError:
+        logger.warning(f"SMTP connection refused for {recipient_email}. Port {smtp_port} might be closed.")
+        return False
     except Exception as e:
         logger.error(f"Failed to send email to {recipient_email}: {e}")
         import traceback
