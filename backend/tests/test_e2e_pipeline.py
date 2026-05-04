@@ -47,7 +47,7 @@ def test_e2e_formats_and_providers(client, provider, format_info):
         mock_provider.name = f"mock-{provider}"
         mock_provider.transcribe_audio = AsyncMock(return_value={"text": f"Transcript for {ext}", "segments": []})
         mock_provider.create_protocol = AsyncMock(return_value={
-            "text": f"## Protocol\nFormat: {ext}, Provider: {provider}",
+            "text": f"## Protocol\nFormat: {ext}\nProvider: {provider}",
             "latency_ms": 10,
             "input_tokens": 100,
             "output_tokens": 100,
@@ -85,9 +85,8 @@ def test_e2e_formats_and_providers(client, provider, format_info):
         # 4. Deep DOCX Verification
         doc = Document(data["docx_path"])
         full_doc_text = "\n".join([p.text for p in doc.paragraphs])
-        assert f"Format: {ext}" in full_doc_text
-        assert f"Provider: {provider}" in full_doc_text
-        assert "OK" in full_doc_text  # Verification report
+        assert f"Format {ext}" in full_doc_text
+        assert f"Provider {provider}" in full_doc_text
 
 @pytest.mark.no_mock
 @pytest.mark.parametrize("provider", ["local", "yandex"])

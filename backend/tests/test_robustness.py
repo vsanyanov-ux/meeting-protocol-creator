@@ -5,7 +5,7 @@ import asyncio
 import shutil
 from unittest.mock import MagicMock, patch, ANY, AsyncMock
 from fastapi.testclient import TestClient
-from main import app, processing_status, cleanup_old_files, processing_semaphore
+from main import app, status_manager, cleanup_old_files, processing_semaphore
 from exceptions import HardwareError
 import datetime
 
@@ -14,11 +14,11 @@ client = TestClient(app)
 def poll_status(file_id, timeout=20):
     start_time = time.time()
     while time.time() - start_time < timeout:
-        status = processing_status.get(file_id, {})
+        status = status_manager.get(file_id)
         if status.get("status") in ["completed", "error"]:
             return status
         time.sleep(0.5)
-    return processing_status.get(file_id, {})
+    return status_manager.get(file_id)
 
 @pytest.mark.asyncio
 async def test_hardware_fallback():
@@ -111,7 +111,7 @@ async def test_concurrency_semaphore():
 
     # All should be in queue or processing
     for fid in file_ids:
-        assert fid in processing_status
+        assert status_manager.get(fid) is not None
 
 @pytest.mark.asyncio
 async def test_automated_cleanup():

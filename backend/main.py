@@ -23,6 +23,7 @@ from contextlib import asynccontextmanager
 from loguru import logger
 from typing import Optional, List, Dict, Any, Callable, Union
 import traceback
+from datetime import datetime
 
 # Import our custom modules
 from providers.base import BaseAIProvider
@@ -37,8 +38,8 @@ load_dotenv()
 # Logging setup
 logger.remove()
 # Use sink=sys.stdout to ensure it uses our UTF-8 wrapper
-logger.add(sys.stdout, colorize=True, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>", enqueue=True)
-logger.add("logs/app.log", rotation="10 MB", retention="10 days", compression="zip", format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}", level="INFO", encoding="utf-8")
+logger.add(sys.stdout, colorize=True, format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>", enqueue=False)
+logger.add("logs/app.log", rotation="10 MB", retention="10 days", compression="zip", format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}", level="INFO", encoding="utf-8", enqueue=False)
 
 # --- Cross-process Resource Locking ---
 class GPULock:
@@ -75,6 +76,7 @@ class GPULock:
 # --- Resource Limits ---
 MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", 1))
 processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
+global_pipeline_lock = asyncio.Lock()  # Serializes the entire pipeline for maximum stability
 gpu_lock = GPULock()
 logger.info(f"Initialized with MAX_CONCURRENT_TASKS = {MAX_CONCURRENT_TASKS} (per worker)")
 
@@ -129,10 +131,13 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"--- STARTUP: Failed to remove stale GPU lock: {e} ---")
 
+    # Clean up zombie tasks in DB
+    status_manager.cleanup_zombie_tasks()
+
     provider_type = os.getenv("AI_PROVIDER", "yandex").lower()
-    logger.info(f"Startup OK. Default provider: {provider_type}. CORS allowed origins: {ALLOWED_ORIGINS}")
+    logger.info(f"Startup OK. Default provider: {provider_type}.")
     yield
-    logger.info("Shutting down Протоколист v5.0.0 🚀 API")
+    logger.info("Shutting down Протоколист API")
 
 app = FastAPI(
     title="Протоколист API",
@@ -153,8 +158,7 @@ async def limit_upload_size(request: Request, call_next):
         )
     return await call_next(request)
 
-# --- Security: CORS — только разрешённые origins ---
-# Добавьте свой домен в ALLOWED_ORIGINS в .env
+# --- Security: CORS ---
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:3000")
 ALLOWED_ORIGINS = [
     "http://localhost:90",
@@ -196,11 +200,9 @@ def get_provider(provider_type: Optional[str] = None, device: Optional[str] = No
             ollama_model=os.getenv("OLLAMA_MODEL", "qwen3.5:9b"),
             device=device
         )
-
     else:
         raise ValueError(f"Unknown AI_PROVIDER: {provider_type}")
 
-# Default provider for global info (backward compatibility)
 ai_provider = get_provider()
 
 UPLOAD_DIR = "uploads"
@@ -262,6 +264,23 @@ class StatusManager:
         status.update(data)
         self.set(file_id, status)
 
+    def cleanup_zombie_tasks(self):
+        """Marks all tasks that were in progress as 'error' after a server restart."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                active_statuses = "('starting', 'uploading', 'transcribing', 'generating', 'verifying', 'emailing')"
+                cursor = conn.execute(f"SELECT file_id, data FROM tasks WHERE json_extract(data, '$.status') IN {active_statuses}")
+                zombies = cursor.fetchall()
+                for file_id, data_json in zombies:
+                    status = json.loads(data_json)
+                    status["status"] = "error"
+                    status["message"] = "Работа сервера была прервана. Пожалуйста, попробуйте запустить обработку снова."
+                    conn.execute("UPDATE tasks SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE file_id = ?", (json.dumps(status, ensure_ascii=False), file_id))
+                if zombies:
+                    logger.info(f"Cleaned up {len(zombies)} zombie tasks.")
+        except Exception as e:
+            logger.error(f"Failed to cleanup zombie tasks: {e}")
+
     def get_all_active_count(self) -> int:
         try:
             with sqlite3.connect(self.db_path) as conn:
@@ -272,11 +291,8 @@ class StatusManager:
 
 status_manager = StatusManager()
 
-# --- Security: Validate required env vars on startup ---
 @app.get("/health")
 async def health_check():
-    """Standard health check endpoint for monitoring."""
-    # We could add more checks here (e.g. Disk space, Yandex Cloud connectivity)
     return {
         "status": "healthy",
         "timestamp": time.time(),
@@ -285,26 +301,12 @@ async def health_check():
 
 @app.get("/info")
 async def get_info():
-    """Returns information about the system configuration for the frontend."""
     location_raw = os.getenv("BACKEND_LOCATION", "local").lower()
-    location_names = {
-        "local": "Локально",
-        "online": "Онлайн"
-    }
-    
-    provider_mapping = {
-        "yandex": "Яндекс Cloud",
-        "local": "Локальный ИИ (GPU)"
-    }
-    
     return {
-        "location": location_names.get(location_raw, "Неизвестно"),
+        "location": "Локально" if location_raw == "local" else "Онлайн",
         "default_provider": ai_provider.name,
-        "provider_name": provider_mapping.get(ai_provider.name, ai_provider.name),
         "is_online": location_raw == "online"
     }
-
-
 
 @app.get("/")
 async def root():
@@ -312,39 +314,19 @@ async def root():
 
 @app.get("/status/{file_id}")
 async def get_status(file_id: str):
-    """Check the status of a specific processing task."""
     status = status_manager.get(file_id)
     if not status:
         raise HTTPException(status_code=404, detail="Processing task not found")
-    
-    # Return a safe copy of the status
-    return {
-        "status": status.get("status"),
-        "message": status.get("message"),
-        "docx_path": status.get("docx_path"),
-        "transcription": status.get("transcription"),
-        "verification_report": status.get("verification_report"),
-        "email_error": status.get("email_error", False)
-    }
+    return status
 
 @app.get("/download/{file_id}")
 async def download_protocol(file_id: str):
-    """Download the generated DOCX file."""
     status = status_manager.get(file_id)
-    if not status:
-        raise HTTPException(status_code=404, detail="File ID not found")
-    
-    if status.get("status") != "completed" and "docx_path" not in status:
-        raise HTTPException(status_code=400, detail="Protocol is not ready yet")
-        
+    if not status or "docx_path" not in status:
+        raise HTTPException(status_code=404, detail="DOCX file not found")
     docx_path = status.get("docx_path")
-    if not docx_path or not os.path.exists(docx_path):
-        raise HTTPException(status_code=404, detail="DOCX file not found on server")
-        
     filename = os.path.basename(docx_path)
-    # RFC 5987: properly encode non-ASCII characters in filename
     encoded_filename = urllib.parse.quote(filename)
-    
     return FileResponse(
         path=docx_path, 
         filename=filename, 
@@ -352,66 +334,25 @@ async def download_protocol(file_id: str):
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
     )
 
-
-from pydantic import BaseModel, Field
-
-class FeedbackRequest(BaseModel):
-    score: float = Field(..., ge=1.0, le=5.0, description="Оценка качества протокола (1-5)")
-    comment: str = Field("", max_length=1000, description="Комментарий")
-    score_name: str = Field("user_rating", description="Название метрики")
-
 @app.post("/feedback/{file_id}")
-async def submit_feedback(file_id: str, body: FeedbackRequest):
-    """
-    Отправить оценку качества протокола в Langfuse.
-    score_name может быть: 'user_rating', 'protocol_completeness', 'formatting_quality'
-    """
-    status = status_manager.get(file_id)
-    if not status:
-        raise HTTPException(status_code=404, detail="Запись не найдена")
-
-    ok = submit_score(
-        file_id=file_id,
-        score_name=body.score_name,
-        value=body.score,
-        comment=body.comment
-    )
-    if ok:
-        return {"status": "ok", "message": "Оценка отправлена в Langfuse"}
-    else:
-        # Langfuse не настроен — не ошибка, просто не записываем
-        return {"status": "skipped", "message": "Langfuse не настроен, оценка не сохранена"}
+async def submit_feedback(file_id: str, score: float = Form(...), comment: str = Form("")):
+    ok = submit_score(file_id=file_id, score_name="user_rating", value=score, comment=comment)
+    return {"status": "ok" if ok else "skipped"}
 
 def cleanup_old_files(max_age_seconds: int = 86400):
-    """Deletes files in UPLOAD_DIR and PROTOCOLS_DIR older than max_age_seconds."""
     now = time.time()
     for directory in [UPLOAD_DIR, PROTOCOLS_DIR]:
-        if not os.path.exists(directory):
-            continue
+        if not os.path.exists(directory): continue
         for filename in os.listdir(directory):
             filepath = os.path.join(directory, filename)
-            # Skip directories like chunks_xxx unless they are also old, but let's just delete files for now.
-            if os.path.isfile(filepath):
-                try:
-                    if os.stat(filepath).st_mtime < now - max_age_seconds:
-                        os.remove(filepath)
-                        logger.info(f"Cleaned up old file: {filepath}")
-                except Exception as e:
-                    logger.error(f"Failed to clean up file {filepath}: {e}")
-            elif os.path.isdir(filepath) and filename.startswith("chunks_"):
-                # Prune old chunk directories
-                try:
-                    if os.stat(filepath).st_mtime < now - max_age_seconds:
-                        shutil.rmtree(filepath)
-                        logger.info(f"Cleaned up old chunk dir: {filepath}")
-                except Exception as e:
-                    logger.error(f"Failed to clean up dir {filepath}: {e}")
+            if os.path.isfile(filepath) and os.stat(filepath).st_mtime < now - max_age_seconds:
+                try: os.remove(filepath)
+                except: pass
 
 @app.post("/process-meeting")
 async def process_meeting(
     background_tasks: BackgroundTasks, 
-    request: Request,
-    file: UploadFile = File(None), # Optional for retries
+    file: UploadFile = File(None),
     email: str = Form(None),
     provider: str = Form(None),
     existing_file_id: str = Form(None),
@@ -419,365 +360,154 @@ async def process_meeting(
     session_id: str = Form(None),
     send_email: bool = Form(True)
 ):
-    """Main endpoint to upload audio and trigger the protocol creation flow."""
     file_id = existing_file_id or str(uuid.uuid4())
-    logger.info(f"Processing request: file_id={file_id}, session_id={session_id}, email={email}, send_email={send_email}, provider={provider}, has_file={file is not None}")
     local_path = None
-    extension = None
-    
     if file:
-        parts = file.filename.split('.')
-        extension = parts[-1].lower() if len(parts) > 1 else ""
-        safe_ext = f".{extension}" if extension else ""
-        local_path = os.path.join(UPLOAD_DIR, f"{file_id}{safe_ext}")
-        
-        # 2. Save file locally (Sync file writing is blocking, offload it)
-        def save_file():
-            with open(local_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-        
-        await asyncio.to_thread(save_file)
+        extension = file.filename.split('.')[-1].lower() if '.' in file.filename else ""
+        local_path = os.path.join(UPLOAD_DIR, f"{file_id}.{extension}" if extension else file_id)
+        with open(local_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        mime_type = magic.from_file(local_path, mime=True)
     else:
-        # Check if file exists in UPLOAD_DIR
         possible_files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id)]
-        if not possible_files:
-            logger.warning(f"File not found for file_id: {file_id}. Request failed.")
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Existing file not found for ID {file_id}. If this was a new upload, the file was not received by the server. Please re-upload."
-            )
+        if not possible_files: raise HTTPException(status_code=404, detail="File not found")
         local_path = os.path.join(UPLOAD_DIR, possible_files[0])
-        extension = local_path.split(".")[-1].lower() if "." in local_path else ""
-    
-    # 2.1 Deep Validation (MIME check) - This is the source of truth
-    # magic.from_file is sync/blocking, offload it
-    mime_type = "unknown"
-    if file:
-        try:
-            mime_type = await asyncio.to_thread(magic.from_file, local_path, mime=True)
-            logger.info(f"File uploaded: {file.filename}, detected MIME: {mime_type}")
-            
-            # Valid MIME types list (simplified)
-            valid_mimes = [
-                "audio/", "video/", "text/", 
-                "application/pdf", 
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                "application/msword",
-                "application/vnd.ms-powerpoint",
-                "application/octet-stream", # common fallback
-                "application/x-zip-compressed", # occasionally for archives
-                "inode/x-empty" # skip empty but don't crash
-            ]
-            
-            # Check if MIME type is valid
-            is_valid = any(mime_type.startswith(m) for m in valid_mimes)
-            
-            # Extension-based rejection (extra safety)
-            forbidden_extensions = ["exe", "dll", "bin", "sh", "bat", "msi"]
-            if extension in forbidden_extensions:
-                if os.path.exists(local_path):
-                    os.remove(local_path)
-                logger.warning(f"Rejected forbidden extension: {extension}")
-                raise HTTPException(status_code=400, detail=f"Unsupported file extension: .{extension}")
-            
-            # Special case: some AAC/M4A files might be detected as audio/x-hx-aac-adts or similar
-            if not is_valid and ("audio" in mime_type or "video" in mime_type or "mpeg" in mime_type):
-                is_valid = True
-                logger.info(f"Accepted {mime_type} as it contains 'audio/video/mpeg' keywords")
-    
-            if not is_valid:
-                os.remove(local_path)
-                logger.warning(f"Rejected file with invalid MIME type: {mime_type}")
-                raise HTTPException(status_code=400, detail=f"Invalid file content. Detected: {mime_type}")
-                
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"MIME validation error: {e}")
-            # Continue if magic fails but log it
-    else:
         mime_type = "reused-file"
-    
-    # 2.2 Initialize status ONLY if it's a new task or previously failed
-    existing_status = status_manager.get(file_id)
-    if not existing_status or existing_status.get("status") in ["error", "failed"]:
-        logger.info(f"Initializing new status for file_id: {file_id}")
-        status_manager.set(file_id, {
-            "status": "starting", 
-            "message": "File uploaded successfully",
-            "filename": file.filename if file else f"Retried-{file_id}",
-            "transcription": None,
-            "verification_report": None,
-            "docx_path": None
-        })
-    else:
-        logger.info(f"Re-using existing status for file_id: {file_id} (current status: {existing_status.get('status')})")
-    
-    # 3. Collect metadata for Langfuse
-    file_size = os.path.getsize(local_path)
-    metadata = {
-        "file_size": file_size,
-        "mime_type": mime_type,
-        "extension": extension or "unknown",
-        "original_filename": file.filename if file else f"Retried-{file_id}",
-        "force_cpu": force_cpu
-    }
 
-    # 4. Trigger processing in background ONLY IF NOT ALREADY PROCESSING
-    if not existing_status or existing_status.get("status") in ["error", "failed", "completed"]:
-        background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu, session_id, send_email)
-        background_tasks.add_task(cleanup_old_files)
-    else:
-        logger.info(f"Pipeline for {file_id} is already running. Skipping redundant task trigger.")
-    
-    return {
-        "status": "processing",
-        "file_id": file_id,
-        "message": "Audio is being transcribed and processed."
-    }
+    status_manager.set(file_id, {
+        "status": "starting", 
+        "message": "File received",
+        "filename": file.filename if file else f"Retried-{file_id}"
+    })
+
+    metadata = {"file_id": file_id, "original_filename": file.filename if file else file_id}
+    background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu, session_id, send_email)
+    return {"status": "processing", "file_id": file_id}
+
+class DummyTrace:
+    def __getattr__(self, name):
+        def dummy(*args, **kwargs): return None
+        return dummy
+    def __enter__(self): return self
+    def __exit__(self, *args): pass
 
 async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None, recipient_email: str = None, provider_type: str = None, force_cpu: bool = False, session_id: str = None, should_send_email: bool = True):
-    """Full pipeline: S3 Upload (optional) -> STT -> GPT -> DOCX -> Email (optional)."""
-    import traceback
-    
-    logger.info(f"run_full_pipeline STARTED for file_id={file_id}, path={local_path}, force_cpu={force_cpu}, provider={provider_type}")
-    
-    try:
-        device_override = "cpu" if force_cpu else None
-        current_provider = get_provider(provider_type, device=device_override)
-        # --- Langfuse v4: используем контекстный менеджер для автоматического завершения трейса ---
-        with PipelineTrace(
-            file_id=file_id,
-            filename=os.path.basename(local_path),
-            provider=current_provider.name,
-            metadata=metadata,
-            session_id=session_id
-        ) as trace:
+    """Orchestrates the full pipeline with a global lock for stability."""
+    def emergency_log(msg):
+        try:
+            with open("logs/pipeline_debug.log", "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now()} | {file_id} | {msg}\n")
+        except: pass
 
-            status_manager.update(file_id, {"status": "starting", "message": "Queued. Waiting for an available processing slot..."})
-            
-            async with gpu_lock:
-                async with processing_semaphore:
-                    # 1. Normalization Step
-                    status_manager.update(file_id, {"status": "starting", "message": "Normalizing uploaded file..."})
-                trace.start_span("normalization")
-                
-                try:
+    async with global_pipeline_lock:
+        emergency_log("PIPELINE START (LOCKED)")
+        try:
+            current_provider = get_provider(provider_type, device="cpu" if force_cpu else None)
+            from langfuse_client import PipelineTrace
+            trace = None
+            try:
+                trace = PipelineTrace(file_id=file_id, filename=os.path.basename(local_path), provider=current_provider.name, metadata=metadata, session_id=session_id)
+                with trace:
+                    # 1. Normalization (CPU)
+                    emergency_log("NORMALIZATION START")
+                    status_manager.update(file_id, {"status": "starting", "message": "Подготовка файла..."})
+                    trace.start_span("normalization")
                     norm_res = await asyncio.to_thread(normalize_file, local_path, file_id)
-                    trace.end_span("normalization", norm_res)
-                except Exception as e:
-                    err_msg = f"Ошибка нормализации: {str(e)}"
-                    logger.error(err_msg)
-                    trace.log_error("normalization", err_msg, traceback.format_exc())
-                    raise e
+                    if norm_res.get("type") == "error": raise Exception(norm_res.get("error"))
+                    trace.end_span("normalization")
 
-                if norm_res["type"] == "error":
-                    status_manager.update(file_id, {"status": "error", "message": norm_res["error"]})
-                    trace.finish("error", {"stage": "normalization", "reason": norm_res["error"]})
-                    return
+                    transcription = None
+                    protocol_text = None
+                    audit_res = {}
 
-                transcription = None
-
-                def status_updater(status: str, msg: str):
-                    status_manager.update(file_id, {"status": status, "message": msg})
-
-                if norm_res["type"] == "text":
-                    status_updater("transcribing", "Text document detected. Bypassing audio transcription...")
-                    transcription = norm_res["content"]
-                    
-                elif norm_res["type"] == "audio":
-                    try:
-                            # Начинаем span для транскрипции
-                            trace.start_span("transcription", as_type="generation")
-                            transcription = await current_provider.transcribe_audio(
-                                audio_path=norm_res["path"], 
-                                file_id=file_id, 
-                                status_updater=status_updater, 
-                                trace=trace
-                            )
-                            # log_stt будет вызван ниже и обновит активный span
-                    except HardwareError as he:
-                        logger.warning(f"GPU FAILURE: {he}. Attempting automatic fallback to CPU...")
-                        status_updater("transcribing", "GPU (CUDA) is unavailable or crashed. Automatically falling back to CPU mode...")
-                        
-                        # Re-initialize local provider forced to CPU
-                        current_provider = get_provider("local", device="cpu")
-                        
-                        try:
-                            transcription = await current_provider.transcribe_audio(
-                                audio_path=norm_res["path"], 
-                                file_id=file_id, 
-                                status_updater=status_updater, 
-                                trace=trace
-                            )
-                        except Exception as cpu_error:
-                            logger.error(f"CPU Fallback also failed: {cpu_error}")
-                            # Final fallback: Try Yandex Cloud if configured
-                            if os.getenv("YANDEX_API_KEY"):
-                                logger.info("Local CPU failed. Attempting final fallback: Cloud (Yandex)...")
-                                status_updater("transcribing", "Local resources exhausted. Switching to Cloud processing...")
-                                current_provider = get_provider("yandex")
-                                transcription = await current_provider.transcribe_audio(
-                                    audio_path=norm_res["path"], 
-                                    file_id=file_id, 
-                                    status_updater=status_updater, 
-                                    trace=trace
-                                )
+                    # 2. AI Steps (GPU intensive, strictly sequential)
+                    status_manager.update(file_id, {"status": "starting", "message": "В очереди GPU..."})
+                    async with gpu_lock:
+                        emergency_log("ACQUIRED GPU LOCK")
+                        async with processing_semaphore:
+                            emergency_log("ACQUIRED SEMAPHORE")
+                            # A. STT
+                            if norm_res["type"] == "text":
+                                transcription = norm_res["content"]
                             else:
-                                raise cpu_error
+                                status_manager.update(file_id, {"status": "transcribing", "message": "Распознавание речи..."})
+                                trace.start_span("transcription", as_type="generation")
+                                transcription = await current_provider.transcribe_audio(
+                                    norm_res["path"], file_id, 
+                                    lambda s, m: status_manager.update(file_id, {"status": s, "message": m}), 
+                                    trace
+                                )
+                                trace.end_span("transcription")
+                            
+                            if not transcription: raise Exception("Transcription failed")
 
-                    except Exception as e:
-                        err_msg = f"Transcription crash: {str(e)}"
-                        logger.error(err_msg)
-                        trace.log_error("transcription", err_msg, traceback.format_exc())
-                        raise e
-                    
-                if not transcription:
-                    status_manager.update(file_id, {"status": "error", "message": "Transcription failed. Please check your audio file and API keys."})
-                    trace.finish("error", {"stage": "transcription", "reason": "empty_result"})
-                    return
-
-                # Store transcription for manual review
-                logger.info(f"--- DATABASE: Saving transcription for {file_id} ({len(transcription)} chars) ---")
-                status_manager.update(file_id, {"transcription": transcription})
-
-                # C. Create Protocol via Provider's GPT
-                logger.info(f"--- PROTOCOL GENERATION: Starting for file_id={file_id}. Transcription length: {len(transcription)} chars ---")
-                status_manager.update(file_id, {"status": "generating", "message": "Analyzing meeting content and generating protocol..."})
-                
-                try:
-                    # Начинаем span как генерацию, чтобы Langfuse считал задержку правильно
-                    trace.start_span("Create Protocol", as_type="generation")
-                    gpt_result = await current_provider.create_protocol(transcription, status_updater=status_updater, file_id=file_id)
-                    protocol_text = gpt_result["text"]
-
-                    # --- Langfuse: логируем LLM-вызов как Generation ---
-                    trace.log_generation(
-                        input_messages=gpt_result["messages"],
-                        output_text=protocol_text or "",
-                        model=current_provider.model_name,
-                        latency_ms=gpt_result["latency_ms"],
-                        input_tokens=gpt_result["input_tokens"],
-                        output_tokens=gpt_result["output_tokens"],
-                        name="Create Protocol"
-                    )
-                    trace.end_span("Create Protocol", {"success": bool(protocol_text)})
-                except Exception as e:
-                    err_msg = f"GPT Generation crash: {str(e)}"
-                    logger.error(err_msg)
-                    trace.log_error("gpt_generation", err_msg, traceback.format_exc())
-                    raise e
-
-                if not protocol_text:
-                    status_manager.set(file_id, {"status": "error", "message": "Protocol generation failed"})
-                    trace.finish("error", {"stage": "gpt", "reason": "empty_result"})
-                    return
-
-                # C2. Automated Verification Step (Self-Critique)
-                status_manager.update(file_id, {"status": "verifying", "message": "AI-Auditor is verifying protocol accuracy..."})
-                
-                try:
-                    # Начинаем span как генерацию
-                    trace.start_span("Audit Protocol", as_type="generation")
-                    verify_res = await current_provider.verify_protocol(transcription, protocol_text)
-                    status_manager.update(file_id, {"verification_report": verify_res["verification_report"]})
-                    
-                    # Log verification to Langfuse (updates active span)
-                    trace.log_generation(
-                        input_messages=[{"role": "user", "content": "Verify protocol"}],
-                        output_text=verify_res["verification_report"],
-                        model=f"{current_provider.model_name}_auditor",
-                        latency_ms=verify_res.get("latency_ms", 0),
-                        input_tokens=verify_res["input_tokens"],
-                        output_tokens=verify_res["output_tokens"],
-                        name="Audit Protocol"
-                    )
-                    trace.end_span("Audit Protocol")
-                    
-                    # --- Langfuse: отправляем автоматические оценки от Аудитора ---
-                    if "scores" in verify_res and verify_res["scores"]:
-                        for metric, value in verify_res["scores"].items():
-                            trace.score(
-                                name=f"ai_{metric}", 
-                                value=float(value), 
-                                comment="Автоматическая оценка AI-Аудитора"
+                            # B. Protocol Generation
+                            emergency_log("GENERATION START")
+                            status_manager.update(file_id, {"status": "generating", "message": "Создание протокола..."})
+                            trace.start_span("protocol_generation", as_type="generation")
+                            gen_result = await current_provider.create_protocol(
+                                transcription, 
+                                lambda s, m: status_manager.update(file_id, {"status": s, "message": m}), 
+                                file_id
                             )
-                except Exception as e:
-                    logger.warning(f"Self-verification failed: {e}")
-                    trace.log_error("verification", str(e), traceback.format_exc())
+                            protocol_text = gen_result.get("text")
+                            emergency_log("GENERATION COMPLETE")
+                            trace.log_generation(gen_result.get("messages", []), protocol_text, current_provider.model_name, gen_result.get("latency_ms", 0), gen_result.get("input_tokens", 0), gen_result.get("output_tokens", 0), "Create Protocol")
+                            trace.end_span("protocol_generation")
 
-                # D. Generate DOCX
-                trace.start_span("docx_generation")
-                try:
+                            # C. Audit
+                            emergency_log("AUDIT START")
+                            status_manager.update(file_id, {"status": "verifying", "message": "Аудит протокола..."})
+                            trace.start_span("verification", as_type="generation")
+                            audit_res = await current_provider.verify_protocol(transcription, protocol_text)
+                            emergency_log("AUDIT COMPLETE")
+
+                    emergency_log("GPU LOCK RELEASED")
+                    # --- GPU RELEASED ---
+                    # 3. Post-AI (Parallel)
+                    status_manager.update(file_id, {"status": "generating", "message": "Формирование DOCX..."})
+                    trace.start_span("docx_generation")
                     docx_path = await asyncio.to_thread(generate_docx, protocol_text)
                     trace.end_span("docx_generation", {"path": docx_path})
-                except Exception as e:
-                    err_msg = f"DOCX generation failed: {str(e)}"
-                    logger.error(err_msg)
-                    trace.log_error("docx_generation", err_msg, traceback.format_exc())
-                    raise e
 
-                # E. Send Email (Skip if no SMTP configured or user opted out)
-                smtp_user = os.getenv("SMTP_USER")
-                if smtp_user and should_send_email:
-                    status_manager.update(file_id, {"status": "emailing", "message": "Отправляем протокол на вашу почту..."})
-                    trace.start_span("email_send")
-                    # Recipient logic: 1. Passed manually, 2. Env var, 3. Default hardcoded
-                    recipient = recipient_email or os.getenv("RECIPIENT_EMAIL", "vanyanov@yandex.ru")
-                    try:
-                        # Dynamic content to avoid spam filters
-                        orig_filename = metadata.get("original_filename", "документа")
-                        success = await asyncio.to_thread(
-                            send_email,
-                            recipient_email=recipient,
-                            subject=f"Готов протокол совещания: {orig_filename}",
-                            body=f"Здравствуйте!\n\nПротокол совещания для файла '{orig_filename}' успешно сформирован и прикрепелен к этому письму.\n\nС уважением,\nПротоколист",
-                            attachment_path=docx_path
-                        )
-                        trace.end_span("email_send", {"success": success, "recipient": recipient})
-                    except Exception as e:
-                        logger.error(f"Email login/send crash: {e}")
-                        trace.log_error("email_send", str(e), traceback.format_exc())
-                        success = False
-
-                    if success:
-                        status_manager.update(file_id, {
-                            "status": "completed", 
-                            "message": "Успех! Протокол отправлен на вашу почту.",
-                            "docx_path": docx_path
-                        })
-                        trace.finish("completed", {"docx_path": docx_path, "email_sent": True})
-                    else:
-                        # ОШИБКА: Если пользователь просил email и он не ушел
-                        status_manager.update(file_id, {
-                            "status": "completed", 
-                            "message": "Протокол сформирован, но произошла ошибка при отправке email.",
-                            "docx_path": docx_path,
-                            "email_error": True
-                        })
-                        # В Langfuse это все равно ошибка
-                        trace.finish("completed_with_email_error", {"docx_path": docx_path, "email_sent": False}, level="ERROR")
-                else:
                     status_manager.update(file_id, {
-                        "status": "completed", 
-                        "message": "Успех! Протокол успешно сформирован (отправка email пропущена).",
-                        "docx_path": docx_path
+                        "transcription": transcription, "protocol": protocol_text,
+                        "verification_report": audit_res.get("verification_report", ""),
+                        "scores": audit_res.get("scores", {}), "docx_path": docx_path
                     })
-                    trace.finish("completed", {"docx_path": docx_path, "email_sent": False})
 
-                if os.path.exists(local_path):
-                    await asyncio.to_thread(os.remove, local_path)
-                if norm_res.get("path") and os.path.exists(norm_res["path"]):
-                    await asyncio.to_thread(os.remove, norm_res["path"])
+                    # Emailing
+                    smtp_user = os.getenv("SMTP_USER")
+                    if smtp_user and should_send_email:
+                        status_manager.update(file_id, {"status": "emailing", "message": "Отправка на почту..."})
+                        trace.start_span("email_send")
+                        recipient = recipient_email or os.getenv("RECIPIENT_EMAIL", "vanyanov@yandex.ru")
+                        success = await asyncio.to_thread(send_email, recipient, f"Протокол: {metadata.get('original_filename', 'Meeting')}", "Ваш протокол готов.", docx_path)
+                        trace.end_span("email_send", {"success": success})
+                        status_manager.update(file_id, {"status": "completed", "message": "Успех! Отправлено на почту." if success else "Протокол готов, почта не ушла."})
+                        trace.finish("completed" if success else "email_error")
+                    else:
+                        status_manager.update(file_id, {"status": "completed", "message": "Успех!"})
+                        trace.finish("completed")
 
-    except Exception as e:
-        logger.error(f"Pipeline error for {file_id}: {e}")
-        status_manager.update(file_id, {"status": "error", "message": f"Произошла непредвиденная ошибка: {str(e)}"})
-    finally:
-        pass
+                    # Cleanup
+                    emergency_log("CLEANUP START")
+                    for p in [local_path, norm_res.get("path")]:
+                        try:
+                            if p and os.path.exists(p): os.remove(p)
+                        except Exception as ce:
+                            emergency_log(f"CLEANUP ERROR for {p}: {ce}")
+                    emergency_log("PIPELINE SUCCESS")
+            except Exception as te:
+                emergency_log(f"TRACE BLOCK ERROR: {te}")
+                if trace: trace.finish(status="error")
+                raise # Re-raise to be caught by outer try
+
+        except Exception as e:
+            emergency_log(f"PIPELINE CRITICAL ERROR: {str(e)}")
+            logger.exception(f"Pipeline error for {file_id}: {e}")
+            status_manager.update(file_id, {"status": "error", "message": str(e)})
 
 if __name__ == "__main__":
     import uvicorn
-    # Use 2 workers for better responsiveness (one for processing, one for heartbeats)
-    # Note: On Windows, workers=N requires app to be passed as a string
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, workers=2)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, workers=1)

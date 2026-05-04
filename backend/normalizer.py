@@ -89,7 +89,7 @@ def normalize_file(filepath: str, file_id: str) -> Dict[str, Any]:
                 "-c:a", "libopus", "-b:a", "24k", "-ac", "1", "-ar", "16000",
                 "-vn", 
                 out_path
-            ], capture_output=True, text=True)
+            ], capture_output=True, text=True, timeout=300)
             
             if result.returncode == 0:
                 return {"type": "audio", "path": out_path}

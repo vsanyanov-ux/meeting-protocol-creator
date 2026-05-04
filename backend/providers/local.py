@@ -18,6 +18,8 @@ from .base import BaseAIProvider
 from exceptions import HardwareError
 from langfuse_client import get_prompt
 
+_GLOBAL_WHISPER_MODEL = None
+
 class LocalProvider(BaseAIProvider):
     def __init__(self, 
                  whisper_model_size: str = "large-v3-turbo", 
@@ -27,7 +29,6 @@ class LocalProvider(BaseAIProvider):
         self.whisper_model_size = whisper_model_size
         self.ollama_url = ollama_url
         self.ollama_model = ollama_model
-        self._whisper_model = None
         self._model_verified = False
         
         # Determine device for Whisper (cuda/cpu)
@@ -80,15 +81,6 @@ class LocalProvider(BaseAIProvider):
 
     async def _cleanup_memory(self):
         """Deeply clean up VRAM and RAM after model usage."""
-        if self._whisper_model is not None:
-            logger.info("--- MEMORY CLEANUP: Unloading Whisper model ---")
-            # Explicitly delete the model reference
-            del self._whisper_model
-            self._whisper_model = None
-            
-        # Standard Python GC
-        gc.collect()
-        
         # Clear CUDA cache if using GPU
         if self.device == "cuda":
             try:
@@ -103,13 +95,14 @@ class LocalProvider(BaseAIProvider):
                 logger.warning(f"Could not clear CUDA cache: {e}")
                 
     async def _get_whisper(self):
-        if self._whisper_model is None:
+        global _GLOBAL_WHISPER_MODEL
+        if _GLOBAL_WHISPER_MODEL is None:
             logger.info(f"--- WHISPER LOADING START: {self.whisper_model_size} on {self.device} ({self.compute_type}) ---")
             logger.info(f"Model path: models_cache/whisper")
             
             t_start = time.time()
             try:
-                self._whisper_model = await asyncio.to_thread(
+                _GLOBAL_WHISPER_MODEL = await asyncio.to_thread(
                     WhisperModel,
                     self.whisper_model_size, 
                     device=self.device, 
@@ -120,7 +113,7 @@ class LocalProvider(BaseAIProvider):
             except Exception as e:
                 logger.error(f"CRITICAL ERROR LOADING WHISPER: {e}")
                 raise
-        return self._whisper_model
+        return _GLOBAL_WHISPER_MODEL
 
 
     @property
@@ -231,7 +224,7 @@ class LocalProvider(BaseAIProvider):
             "messages": messages,
             "stream": False,
             "think": False,  # Disable Qwen3.5 thinking mode to prevent empty responses
-            "keep_alive": 0,  # Force unload model after request
+            "keep_alive": 300,  # Keep in VRAM for 5 mins to handle chunks fast
             "options": {
                 "temperature": temperature,
                 "num_predict": 4096,
@@ -299,6 +292,10 @@ class LocalProvider(BaseAIProvider):
 
     async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None) -> Dict[str, Any]:
         CHUNK_THRESHOLD = 15000
+        if self.device == "cuda":
+            await self._cleanup_memory()
+            await asyncio.sleep(1)
+            
         if len(transcription) <= CHUNK_THRESHOLD:
             return await self._create_protocol_single(transcription)
         else:
@@ -375,7 +372,7 @@ class LocalProvider(BaseAIProvider):
         
         system_text = get_prompt("meeting_create_protocol", fallback=fallback_system)
         
-        user_prompt = get_prompt("meeting_create_protocol_user", fallback=f"Изучи текст и {prompt_prefix} НА РУССКОМ:\n\n{{text}}")
+        user_prompt = get_prompt("meeting_create_protocol_user", fallback=f"Изучи текст и {prompt_prefix} НА РУССКОМ:\n\n{{{{text}}}}")
         user_text = user_prompt.replace("{{text}}", text)\
                                .replace("{{source_type}}", source_type)\
                                .replace("{{action_type}}", prompt_prefix)
@@ -384,6 +381,9 @@ class LocalProvider(BaseAIProvider):
         return await self._call_ollama(messages, temperature=0.2)
 
     async def verify_protocol(self, transcription: str, protocol: str) -> Dict[str, Any]:
+        if self.device == "cuda":
+            await self._cleanup_memory()
+            
         fallback_system = "Ты — корпоративный аудитор. Сравни РАСШИФРОВКУ и ПРОТОКОЛ. Выдай краткий отчет на русском."
         system_text = get_prompt("meeting_verify_protocol", fallback=fallback_system)
         

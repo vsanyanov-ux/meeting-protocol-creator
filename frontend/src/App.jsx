@@ -203,6 +203,8 @@ const App = () => {
     // Map backend status to frontend step names
     if (currentStatus === 'summarizing') currentStatus = 'generating';
     if (currentStatus === 'sending') currentStatus = 'emailing';
+    // starting should also be mapped to uploading for the first step icon to pulse
+    if (currentStatus === 'starting') currentStatus = 'uploading';
     return currentStatus === stepName;
   };
 
@@ -450,9 +452,9 @@ const App = () => {
                 <div className="status-container">
                   <StatusStep 
                     title="Загрузка" 
-                    desc={selectedProvider === 'local' ? "Подготовка файла для локальной обработки" : "Загружаем аудио в облачное хранилище"} 
+                    desc={(status?.status === 'starting' || status?.status === 'uploading') && status?.message ? status.message : (selectedProvider === 'local' ? "Подготовка файла для локальной обработки" : "Загружаем аудио в облачное хранилище")} 
                     icon={<Upload size={18} />}
-                    isActive={status?.status === 'uploading'}
+                    isActive={status?.status === 'uploading' || status?.status === 'starting'}
                     isComplete={currentStepIndex() > 1}
                   />
                   <StatusStep 
