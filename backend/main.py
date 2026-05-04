@@ -141,7 +141,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Протоколист API",
-    version="5.1.0",
+    version="5.2.0",
     lifespan=lifespan
 )
 
@@ -282,11 +282,15 @@ class StatusManager:
             logger.error(f"Failed to cleanup zombie tasks: {e}")
 
     def get_all_active_count(self) -> int:
+        """Returns the number of tasks currently being processed (any non-final state)."""
         try:
             with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.execute("SELECT COUNT(*) FROM tasks WHERE data LIKE '%\"status\": \"processing\"%' OR data LIKE '%\"status\": \"transcribing\"%'")
-                return cursor.fetchone()[0]
-        except:
+                # Count all tasks that are NOT in 'completed' or 'error' state
+                cursor = conn.execute("SELECT COUNT(*) FROM tasks WHERE json_extract(data, '$.status') NOT IN ('completed', 'error')")
+                count = cursor.fetchone()[0]
+                return count
+        except Exception as e:
+            logger.error(f"Error counting active tasks: {e}")
             return 0
 
 status_manager = StatusManager()
@@ -448,7 +452,8 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                             gen_result = await current_provider.create_protocol(
                                 transcription, 
                                 lambda s, m: status_manager.update(file_id, {"status": s, "message": m}), 
-                                file_id
+                                file_id,
+                                trace=trace
                             )
                             protocol_text = gen_result.get("text")
                             emergency_log("GENERATION COMPLETE")
@@ -459,7 +464,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                             emergency_log("AUDIT START")
                             status_manager.update(file_id, {"status": "verifying", "message": "Аудит протокола..."})
                             trace.start_span("verification", as_type="generation")
-                            audit_res = await current_provider.verify_protocol(transcription, protocol_text)
+                            audit_res = await current_provider.verify_protocol(transcription, protocol_text, trace=trace)
                             emergency_log("AUDIT COMPLETE")
 
                     emergency_log("GPU LOCK RELEASED")
@@ -498,6 +503,14 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                         except Exception as ce:
                             emergency_log(f"CLEANUP ERROR for {p}: {ce}")
                     emergency_log("PIPELINE SUCCESS")
+                    
+                    # 4. Smart Cleanup: Only unload if no other tasks are in queue
+                    active_count = status_manager.get_all_active_count()
+                    if active_count <= 1: # Only current task is still 'active' (status is not yet 'completed')
+                        logger.info(f"--- SMART CLEANUP: Last task in queue ({file_id}). Clearing VRAM... ---")
+                        await current_provider.cleanup()
+                    else:
+                        logger.info(f"--- SMART CLEANUP SKIPPED: {active_count-1} more tasks in queue. Keeping models loaded. ---")
             except Exception as te:
                 emergency_log(f"TRACE BLOCK ERROR: {te}")
                 if trace: trace.finish(status="error")

@@ -224,7 +224,7 @@ class YandexProvider(BaseAIProvider):
         logger.error("Long STT timed out after 1 hour.")
         return None
 
-    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None) -> Dict[str, Any]:
+    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None, trace: Any = None) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
         fallback_system = (
             "Ты — профессиональный специалист по ведению протоколов совещаний. Твоя задача — составить официальный протокол на основе расшифровки.\n\n"
@@ -276,6 +276,8 @@ class YandexProvider(BaseAIProvider):
                     usage = data["result"].get("usage", {})
                     result["input_tokens"] = usage.get("inputTextTokens")
                     result["output_tokens"] = usage.get("completionTokens")
+                    if trace:
+                        trace.log_generation(messages, result["text"], self.gpt_model, result["latency_ms"], result["input_tokens"], result["output_tokens"], "Yandex GPT Protocol Generation")
                     return result
                 elif response.status_code in [429, 500, 502, 503, 504]:
                     logger.warning(f"GPT retryable error {response.status_code} (attempt {attempt+1}/{max_retries})")
@@ -298,7 +300,7 @@ class YandexProvider(BaseAIProvider):
             
         return result
 
-    async def verify_protocol(self, transcription: str, protocol: str) -> Dict[str, Any]:
+    async def verify_protocol(self, transcription: str, protocol: str, trace: Any = None) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
         fallback_system = (
             "Ты — строгий корпоративный аудитор. Твоя задача: Сравнить РАСШИФРОВКУ и готовый ПРОТОКОЛ.\n"
@@ -371,6 +373,11 @@ class YandexProvider(BaseAIProvider):
                 usage = data["result"].get("usage", {})
                 result["input_tokens"] = usage.get("inputTextTokens")
                 result["output_tokens"] = usage.get("completionTokens")
+                if trace:
+                    trace.log_generation(messages, text, self.gpt_model, result["latency_ms"], result["input_tokens"], result["output_tokens"], "Yandex GPT Verification")
+                    if result.get("scores"):
+                        for k, v in result["scores"].items():
+                            trace.score(k, v)
         except Exception as e:
             logger.error(f"Verification Error: {e}")
             

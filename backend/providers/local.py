@@ -146,6 +146,9 @@ class LocalProvider(BaseAIProvider):
         status_updater: Callable[[str, str], None],
         trace: Any
     ) -> Optional[str]:
+        if trace:
+            # Estimate duration for logging (optional, but good for cost)
+            trace.log_stt(0, model=f"whisper-{self.whisper_model_size}")
         if self.device == "cuda":
             await self._unload_ollama_models()
             await self._cleanup_memory()
@@ -290,7 +293,7 @@ class LocalProvider(BaseAIProvider):
             chunks.append("".join(current_chunk))
         return chunks
 
-    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None) -> Dict[str, Any]:
+    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None, trace: Any = None) -> Dict[str, Any]:
         CHUNK_THRESHOLD = 15000
         if self.device == "cuda":
             await self._cleanup_memory()
@@ -323,7 +326,7 @@ class LocalProvider(BaseAIProvider):
                 chunk = chunks[i]
                 if status_updater:
                     status_updater("summarizing", f"Анализ части {i+1} из {len(chunks)}...")
-                summary_part = await self._summarize_chunk(chunk, i+1, len(chunks))
+                summary_part = await self._summarize_chunk(chunk, i+1, len(chunks), trace=trace)
                 partial_summaries.append(summary_part)
                 if storage_path:
                     with open(storage_path, "w", encoding="utf-8") as f:
@@ -333,13 +336,13 @@ class LocalProvider(BaseAIProvider):
             if status_updater:
                 status_updater("summarizing", "Формирование финального протокола...")
             
-            result = await self._create_protocol_single(combined_context, is_consolidated=True)
+            result = await self._create_protocol_single(combined_context, is_consolidated=True, trace=trace)
             if storage_path and os.path.exists(storage_path):
                 try: os.remove(storage_path)
                 except: pass
             return result
 
-    async def _summarize_chunk(self, chunk: str, index: int, total: int) -> str:
+    async def _summarize_chunk(self, chunk: str, index: int, total: int, trace: Any = None) -> str:
         fallback_system = (
             "Ты — профессиональный секретарь и эксперт по анализу деловых встреч. Твоя задача — выделить все важные факты, решения и поручения "
             f"из части {index} (из {total}) транскрипции совещания. Пиши на РУССКОМ ЯЗЫКЕ.\n"
@@ -356,9 +359,11 @@ class LocalProvider(BaseAIProvider):
 
         messages = [{"role": "system", "content": system_text}, {"role": "user", "content": user_text}]
         res = await self._call_ollama(messages, temperature=0.1)
+        if trace:
+            trace.log_generation(messages, res.get("text", ""), self.ollama_model, res.get("latency_ms", 0), res.get("input_tokens", 0), res.get("output_tokens", 0), f"Summarize Chunk {index}/{total}")
         return res.get("text", "Ошибка обработки части.")
 
-    async def _create_protocol_single(self, text: str, is_consolidated: bool = False) -> Dict[str, Any]:
+    async def _create_protocol_single(self, text: str, is_consolidated: bool = False, trace: Any = None) -> Dict[str, Any]:
         prompt_prefix = "составь подробный протокол" if not is_consolidated else "составь ФИНАЛЬНЫЙ СВОДНЫЙ протокол"
         source_type = "расшифровки" if not is_consolidated else "тезисов"
         
@@ -378,9 +383,12 @@ class LocalProvider(BaseAIProvider):
                                .replace("{{action_type}}", prompt_prefix)
 
         messages = [{"role": "system", "content": system_text}, {"role": "user", "content": user_text}]
-        return await self._call_ollama(messages, temperature=0.2)
+        res = await self._call_ollama(messages, temperature=0.2)
+        if trace:
+            trace.log_generation(messages, res.get("text", ""), self.ollama_model, res.get("latency_ms", 0), res.get("input_tokens", 0), res.get("output_tokens", 0), "Final Protocol Generation")
+        return res
 
-    async def verify_protocol(self, transcription: str, protocol: str) -> Dict[str, Any]:
+    async def verify_protocol(self, transcription: str, protocol: str, trace: Any = None) -> Dict[str, Any]:
         if self.device == "cuda":
             await self._cleanup_memory()
             
@@ -403,6 +411,9 @@ class LocalProvider(BaseAIProvider):
             if json_match:
                 score_data = json.loads(json_match.group(1))
                 scores = score_data.get("scores", {})
+                if trace and scores:
+                    for k, v in scores.items():
+                        trace.score(k, v)
                 logger.info(f"✅ Auditor scores extracted (local): {scores}")
         except Exception as je:
             logger.warning(f"Could not parse auditor scores (local): {je}")
@@ -417,4 +428,12 @@ class LocalProvider(BaseAIProvider):
             "output_tokens": res["output_tokens"],
             "scores": scores
         }
+
+    async def cleanup(self):
+        """Forcefully release GPU resources."""
+        if self.device == "cuda":
+            logger.info("--- SMART CLEANUP START: Releasing GPU resources ---")
+            await self._unload_ollama_models()
+            await self._cleanup_memory()
+            logger.info("--- SMART CLEANUP COMPLETE ---")
 

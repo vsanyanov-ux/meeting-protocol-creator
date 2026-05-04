@@ -29,7 +29,7 @@ class BaseAIProvider(ABC):
         pass
 
     @abstractmethod
-    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None) -> Dict[str, Any]:
+    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None, trace: Any = None) -> Dict[str, Any]:
         """
         Generate protocol from text.
         Returns dict with: text (str), latency_ms (int), input_tokens (int), output_tokens (int), messages (list)
@@ -37,10 +37,16 @@ class BaseAIProvider(ABC):
         pass
 
     @abstractmethod
-    async def verify_protocol(self, transcription: str, protocol: str) -> Dict[str, Any]:
+    async def verify_protocol(self, transcription: str, protocol: str, trace: Any = None) -> Dict[str, Any]:
         """
         Verify protocol against transcription.
         Returns dict with: verification_report (str), input_tokens (int), output_tokens (int)
+        """
+        pass
+
+    async def cleanup(self):
+        """
+        Optional method to free resources (VRAM/RAM) after a task or queue completion.
         """
         pass
 
