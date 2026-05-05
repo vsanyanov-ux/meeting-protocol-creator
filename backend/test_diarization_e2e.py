@@ -26,6 +26,10 @@ class MockTrace:
     def start_span(self, name): logger.info(f"SPAN START: {name}")
     def end_span(self, name, metadata=None): logger.info(f"SPAN END: {name} | Metadata: {metadata}")
     def log_error(self, name, error, tb=None): logger.error(f"ERROR in {name}: {error}")
+    def log_stt(self, duration, model=None): logger.info(f"STT LOG: {duration}s | Model: {model}")
+    def log_generation(self, messages, text, model, latency, input_tokens, output_tokens, name):
+        logger.info(f"GENERATION LOG: {name} | Model: {model} | Tokens: {input_tokens}/{output_tokens}")
+    def score(self, name, value): logger.info(f"SCORE: {name} = {value}")
     def finish(self, status, metadata=None): logger.info(f"TRACE FINISHED: {status}")
 
 async def test_full_pipeline():

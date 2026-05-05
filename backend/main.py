@@ -75,10 +75,11 @@ class GPULock:
 
 # --- Resource Limits ---
 MAX_CONCURRENT_TASKS = int(os.getenv("MAX_CONCURRENT_TASKS", 1))
+MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE", 50)) # Prevent queue flooding (Point 2)
 processing_semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
 global_pipeline_lock = asyncio.Lock()  # Serializes the entire pipeline for maximum stability
 gpu_lock = GPULock()
-logger.info(f"Initialized with MAX_CONCURRENT_TASKS = {MAX_CONCURRENT_TASKS} (per worker)")
+logger.info(f"Initialized with MAX_CONCURRENT_TASKS = {MAX_CONCURRENT_TASKS}, MAX_QUEUE_SIZE = {MAX_QUEUE_SIZE}")
 
 
 # --- CUDA DLL Setup for Windows ---
@@ -212,6 +213,25 @@ for d in [UPLOAD_DIR, PROTOCOLS_DIR, STORAGE_DIR]:
     if not os.path.exists(d):
         os.makedirs(d)
 
+def is_safe_filename(filename: str) -> bool:
+    """Checks if a filename is safe (no traversal, no suspicious chars)."""
+    if not filename:
+        return True
+    # Only allow alphanumeric, underscore, hyphen and dot
+    import re
+    return bool(re.match(r'^[a-zA-Z0-9._-]+$', filename)) and ".." not in filename
+
+def get_dir_size(path: str) -> int:
+    """Returns total size of a directory in bytes."""
+    total = 0
+    with os.scandir(path) as it:
+        for entry in it:
+            if entry.is_file():
+                total += entry.stat().st_size
+    return total
+
+MAX_TOTAL_UPLOADS_SIZE_BYTES = 5 * 1024 * 1024 * 1024  # 5 GB total limit
+
 # --- Persistent Status Management ---
 import sqlite3
 
@@ -224,6 +244,10 @@ class StatusManager:
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
+            # Enable WAL mode for concurrent read/write (Point 5)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("PRAGMA busy_timeout = 30000") # 30s timeout
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS tasks (
                     file_id TEXT PRIMARY KEY,
@@ -258,11 +282,29 @@ class StatusManager:
             logger.error(f"DB Error writing status for {file_id}: {e}")
 
     def update(self, file_id: str, data: Dict[str, Any]):
-        status = self.get(file_id)
-        if not status and data.get("status") != "starting":
-            return
-        status.update(data)
-        self.set(file_id, status)
+        """Atomic update using transaction (Point 5)."""
+        try:
+            with sqlite3.connect(self.db_path, timeout=30) as conn:
+                conn.execute("BEGIN IMMEDIATE") # Lock for writing
+                cursor = conn.execute("SELECT data FROM tasks WHERE file_id = ?", (file_id,))
+                row = cursor.fetchone()
+                
+                if not row and data.get("status") != "starting":
+                    return
+                
+                status = json.loads(row[0]) if row else {}
+                status.update(data)
+                status_json = json.dumps(status, ensure_ascii=False)
+                
+                conn.execute("""
+                    INSERT INTO tasks (file_id, data, updated_at) 
+                    VALUES (?, ?, CURRENT_TIMESTAMP)
+                    ON CONFLICT(file_id) DO UPDATE SET 
+                        data = excluded.data,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (file_id, status_json))
+        except Exception as e:
+            logger.error(f"DB Error atomic updating status for {file_id}: {e}")
 
     def cleanup_zombie_tasks(self):
         """Marks all tasks that were in progress as 'error' after a server restart."""
@@ -340,6 +382,8 @@ async def download_protocol(file_id: str):
 
 @app.post("/feedback/{file_id}")
 async def submit_feedback(file_id: str, score: float = Form(...), comment: str = Form("")):
+    # Basic sanitization
+    file_id = os.path.basename(file_id)
     ok = submit_score(file_id=file_id, score_name="user_rating", value=score, comment=comment)
     return {"status": "ok" if ok else "skipped"}
 
@@ -362,18 +406,50 @@ async def process_meeting(
     existing_file_id: str = Form(None),
     force_cpu: bool = Form(False),
     session_id: str = Form(None),
-    send_email: bool = Form(True)
+    should_send_email: bool = Form(True)
 ):
+    # 0. Check Queue Size (Point 2: VRAM/Queue exhaustion protection)
+    active_tasks = status_manager.get_all_active_count()
+    if active_tasks >= MAX_QUEUE_SIZE:
+        logger.warning(f"Rejecting request: queue full ({active_tasks}/{MAX_QUEUE_SIZE})")
+        raise HTTPException(
+            status_code=503, 
+            detail="Сервер перегружен (слишком много задач в очереди). Пожалуйста, попробуйте через несколько минут."
+        )
+
+    # 1. Sanitize Inputs
+    if existing_file_id:
+        existing_file_id = os.path.basename(existing_file_id)
+    
     file_id = existing_file_id or str(uuid.uuid4())
+    
+    # Proactive cleanup before each new task
+    cleanup_old_files()
+
     local_path = None
     if file:
-        extension = file.filename.split('.')[-1].lower() if '.' in file.filename else ""
+        # Sanitize extension
+        raw_extension = file.filename.split('.')[-1].lower() if '.' in file.filename else ""
+        import re
+        extension = re.sub(r'[^a-z0-9]', '', raw_extension)
+        
+        # Check overall disk quota
+        current_usage = get_dir_size(UPLOAD_DIR)
+        if current_usage > MAX_TOTAL_UPLOADS_SIZE_BYTES:
+             raise HTTPException(status_code=507, detail="Превышена общая квота хранилища на сервере. Пожалуйста, попробуйте позже.")
+
         local_path = os.path.join(UPLOAD_DIR, f"{file_id}.{extension}" if extension else file_id)
+        
+        # Ensure final path is still within UPLOAD_DIR
+        if not os.path.abspath(local_path).startswith(os.path.abspath(UPLOAD_DIR)):
+            raise HTTPException(status_code=403, detail="Invalid file path")
+
         with open(local_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         mime_type = magic.from_file(local_path, mime=True)
     else:
-        possible_files = [f for f in os.listdir(UPLOAD_DIR) if f.startswith(file_id)]
+        # Prevent traversal when reusing file
+        possible_files = [f for f in os.listdir(UPLOAD_DIR) if f == file_id or f.startswith(f"{file_id}.")]
         if not possible_files: raise HTTPException(status_code=404, detail="File not found")
         local_path = os.path.join(UPLOAD_DIR, possible_files[0])
         mime_type = "reused-file"
