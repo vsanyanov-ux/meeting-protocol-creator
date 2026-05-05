@@ -1,6 +1,7 @@
 import os
 import time
 import uuid
+import json
 from loguru import logger
 from langfuse import Langfuse
 from typing import Optional, List, Dict, Any
@@ -190,17 +191,53 @@ class PipelineTrace:
             self.finish(status="completed")
 
 def get_prompt(name, version=None, fallback=None, **kwargs):
-    client = get_langfuse_client()
-    if client:
+    """
+    Fetches a prompt with local caching support for closed-loop environments.
+    Priority: Local JSON -> Langfuse API -> Hardcoded Fallback
+    """
+    p_text = None
+    prompt_dir = os.path.join(os.path.dirname(__file__), "prompts")
+    local_path = os.path.join(prompt_dir, f"{name}.json")
+
+    # 1. Try Local Cache (JSON)
+    if os.path.exists(local_path):
         try:
-            prompt = client.get_prompt(name, version=version)
-            p_text = getattr(prompt, "prompt", fallback)
-            for k, v in kwargs.items():
-                p_text = p_text.replace(f"{{{{{k}}}}}", str(v))
-            return p_text
+            with open(local_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                p_text = data.get("prompt")
+                if p_text:
+                    logger.debug(f"Loaded prompt '{name}' from local cache")
         except Exception as e:
-            logger.warning(f"Failed to fetch prompt {name} from Langfuse: {e}")
-    return fallback
+            logger.warning(f"Failed to read local prompt {name}: {e}")
+
+    # 2. Try Langfuse API (if online and local missing/failed)
+    if not p_text:
+        client = get_langfuse_client()
+        if client:
+            try:
+                prompt = client.get_prompt(name, version=version)
+                p_text = getattr(prompt, "prompt", None)
+                if p_text:
+                    logger.info(f"Fetched prompt '{name}' from Langfuse")
+                    # Optional: Update local cache if we have a successful fetch
+                    if not os.path.exists(prompt_dir):
+                        os.makedirs(prompt_dir)
+                    try:
+                        with open(local_path, "w", encoding="utf-8") as f:
+                            json.dump({"name": name, "prompt": p_text, "version": version or "latest", "updated_at": time.time()}, f, ensure_ascii=False, indent=2)
+                    except: pass
+            except Exception as e:
+                logger.warning(f"Failed to fetch prompt {name} from Langfuse: {e}")
+
+    # 3. Final Fallback
+    final_text = p_text or fallback
+    
+    # 4. Handle template variables if any remain (Ollama/Yandex style)
+    if final_text:
+        for k, v in kwargs.items():
+            final_text = final_text.replace(f"{{{{{k}}}}}", str(v))
+            
+    return final_text
 
 def submit_score(trace_id, name, value, comment=None):
     client = get_langfuse_client()

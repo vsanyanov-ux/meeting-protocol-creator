@@ -1,0 +1,7 @@
+{
+  "name": "meeting_humanize_speakers_user",
+  "prompt": "Транскрипция для обработки (сохрани метки времени если есть):\n\n{{transcription}}",
+  "version": 2,
+  "config": {},
+  "synced_at": 1777964151.4581234
+}

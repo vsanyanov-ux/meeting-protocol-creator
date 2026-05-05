@@ -17,13 +17,23 @@ import {
   Wifi,
   Cpu,
   Lock,
-  LockOpen
+  LockOpen,
+  LogOut,
+  History,
+  ArrowLeft,
+  Clock,
+  Calendar,
+  ExternalLink,
+  HardDrive,
+  Database
 } from 'lucide-react';
+
 import { motion, AnimatePresence } from 'framer-motion';
 import protocolLogo from './assets/protocolist-logo.png';
 import yandexLogo from './assets/yandex-logo.png';
 import qwenLogo from './assets/qwen-logo.png';
-import { uploadMeeting, getProcessingStatus, getSystemInfo, API_BASE_URL } from './api';
+import { uploadMeeting, getProcessingStatus, getSystemInfo, getHistory, getHealth, API_BASE_URL } from './api';
+
 
 const PROVIDER_NAMES = {
   yandex: 'YandexGPT',
@@ -47,7 +57,16 @@ const App = () => {
   const [isBackendOnline, setIsBackendOnline] = useState(false);
   const [sessionId, setSessionId] = useState(null);
   const [shouldSendEmail, setShouldSendEmail] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authChecking, setAuthChecking] = useState(true);
+  const [password, setPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [view, setView] = useState('main'); // 'main' | 'archive'
+  const [history, setHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [healthData, setHealthData] = useState(null);
   const fileInputRef = useRef(null);
+
   const backendFailCount = useRef(0);
 
   // Initialize Session ID
@@ -58,9 +77,32 @@ const App = () => {
       localStorage.setItem('protocolist_session_id', sid);
     }
     setSessionId(sid);
+
+    // Initial Auth Check
+    const checkAuth = async () => {
+      const storedPwd = localStorage.getItem('protocolist_password');
+      if (!storedPwd) {
+        setIsAuthenticated(false);
+        setAuthChecking(false);
+        return;
+      }
+      try {
+        await getSystemInfo(); // This will fail with 401 if password is wrong
+        setIsAuthenticated(true);
+      } catch (err) {
+        if (err.response?.status === 401) {
+          setIsAuthenticated(false);
+        } else {
+          // If it's a network error, we might still be "authed" but offline
+          setIsAuthenticated(!!storedPwd);
+        }
+      }
+      setAuthChecking(false);
+    };
+    checkAuth();
   }, []);
 
-  // Fetch system info on mount
+  // Fetch system and health info on mount
   useEffect(() => {
     const fetchInfo = async () => {
       try {
@@ -74,16 +116,23 @@ const App = () => {
       } catch (err) {
         console.error("Failed to fetch system info:", err);
         backendFailCount.current += 1;
-        // Only set offline if failed 3 times in a row
         if (backendFailCount.current >= 3) {
           setIsBackendOnline(false);
         }
       }
+
+      // Also fetch health/disk info
+      try {
+        const health = await getHealth();
+        setHealthData(health);
+      } catch (err) {
+        console.error("Failed to fetch health info:", err);
+      }
     };
     fetchInfo();
-    const interval = setInterval(fetchInfo, 2000); // Poll every 2s for better UX
+    const interval = setInterval(fetchInfo, 5000); // Poll every 5s for health (less frequent than system info was, but combined)
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedProvider]);
 
   // Poll status when fileId is present
   useEffect(() => {
@@ -114,6 +163,23 @@ const App = () => {
     }
   };
 
+  const handleLogin = async (e) => {
+    if (e) e.preventDefault();
+    setLoading(true);
+    setAuthError('');
+    try {
+      localStorage.setItem('protocolist_password', password);
+      await getSystemInfo();
+      setIsAuthenticated(true);
+      setError(null);
+    } catch (err) {
+      setAuthError(err.response?.data?.detail || "Неверный пароль. Попробуйте еще раз.");
+      localStorage.removeItem('protocolist_password');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleUpload = async (isFallback = false, fallbackProvider = null, forceCpu = false) => {
     if (!file && !isFallback) return;
     setLoading(true);
@@ -138,6 +204,31 @@ const App = () => {
       setLoading(false);
     }
   };
+
+  const handleLogout = () => {
+    localStorage.removeItem('protocolist_password');
+    setIsAuthenticated(false);
+    setPassword('');
+    setAuthError('');
+  };
+  
+  const fetchHistory = async () => {
+    setHistoryLoading(true);
+    try {
+      const data = await getHistory(50);
+      setHistory(data);
+    } catch (err) {
+      console.error("Failed to fetch history:", err);
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const handleSwitchToArchive = () => {
+    setView('archive');
+    fetchHistory();
+  };
+
 
   const handleDragOver = (e) => {
     e.preventDefault();
@@ -208,6 +299,76 @@ const App = () => {
     return currentStatus === stepName;
   };
 
+  if (authChecking) {
+    return (
+      <div className="bg-mesh" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh' }}>
+        <Loader2 className="animate-spin text-primary" size={48} />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <>
+        <div className="bg-mesh"></div>
+        <div className="container" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="glass-card"
+            style={{ maxWidth: '400px', width: '100%', padding: '3rem' }}
+          >
+            <header style={{ textAlign: 'center', marginBottom: '2rem' }}>
+              <div style={{ width: 64, height: 64, margin: '0 auto 1rem' }}>
+                <img src={protocolLogo} alt="Logo" style={{ width: '100%', borderRadius: 16 }} />
+              </div>
+              <h2 style={{ fontSize: '1.5rem', marginBottom: '0.5rem' }}>Вход в систему</h2>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)' }}>Для работы с сервисом требуется аутентификация</p>
+            </header>
+
+            <form onSubmit={handleLogin}>
+              <div style={{ position: 'relative', marginBottom: '1.5rem' }}>
+                <Lock style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--primary)', opacity: 0.7 }} size={18} />
+                <input 
+                  type="password" 
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Пароль доступа"
+                  autoFocus
+                  className="glass-input"
+                  style={{ width: '100%', paddingLeft: '3rem', borderRadius: 12, border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)', color: 'white', height: '3.5rem' }}
+                />
+              </div>
+              
+              {authError && (
+                <motion.div 
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  style={{ marginBottom: '1.5rem', color: '#fca5a5', fontSize: '0.85rem', textAlign: 'center' }}
+                >
+                  {authError}
+                </motion.div>
+              )}
+
+              <button 
+                type="submit" 
+                className="btn btn-primary" 
+                disabled={!password || loading}
+                style={{ height: '3.5rem' }}
+              >
+                {loading ? <Loader2 className="animate-spin" /> : "Войти"}
+              </button>
+            </form>
+            
+            <div style={{ marginTop: '2rem', textAlign: 'center', fontSize: '0.75rem', color: 'rgba(255,255,255,0.3)' }}>
+              Protocolist v5.2.0 • Система защищена
+            </div>
+          </motion.div>
+        </div>
+      </>
+    );
+  }
+
   return (
     <>
       <div className="bg-mesh"></div>
@@ -217,8 +378,57 @@ const App = () => {
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.6 }}
           className="glass-card"
+          style={{ position: 'relative' }}
         >
+            <div style={{ position: 'absolute', top: '1.5rem', right: '1.5rem', display: 'flex', gap: '0.75rem' }}>
+              {view === 'main' && (
+                <button 
+                  onClick={handleSwitchToArchive}
+                  style={{ 
+                    background: 'rgba(79, 70, 229, 0.1)', 
+                    border: '1px solid rgba(79, 70, 229, 0.2)', 
+                    color: 'var(--primary)',
+                    padding: '0.5rem 1rem',
+                    borderRadius: '8px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    fontSize: '0.8rem',
+                    transition: 'all 0.2s',
+                    fontWeight: 600
+                  }}
+                  className="hover-bg-glass"
+                >
+                  <History size={16} />
+                  <span>История</span>
+                </button>
+              )}
+              <button 
+                onClick={handleLogout}
+                style={{ 
+                  background: 'rgba(255,255,255,0.05)', 
+                  border: '1px solid rgba(255,255,255,0.1)', 
+                  color: 'rgba(255,255,255,0.5)',
+                  padding: '0.5rem',
+                  borderRadius: '8px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                  fontSize: '0.8rem',
+                  transition: 'all 0.2s'
+                }}
+                className="hover-bg-glass"
+                title="Выйти из системы"
+              >
+                <LogOut size={16} />
+                <span>Выйти</span>
+              </button>
+            </div>
+
           <header style={{ textAlign: 'center', marginBottom: '3rem' }}>
+
             <motion.div 
               initial={{ scale: 0.8 }}
               animate={{ scale: 1 }}
@@ -278,7 +488,128 @@ const App = () => {
           </header>
 
           <AnimatePresence mode="wait">
-            {!fileId ? (
+            {view === 'archive' ? (
+              <motion.div 
+                key="archive-view"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, x: -20 }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', marginBottom: '2rem' }}>
+                  <button 
+                    onClick={() => setView('main')}
+                    style={{ 
+                      background: 'none', 
+                      border: 'none', 
+                      color: 'var(--text-muted)', 
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      padding: '0.5rem',
+                      borderRadius: '8px'
+                    }}
+                    className="hover-bg-glass"
+                  >
+                    <ArrowLeft size={20} />
+                    <span>Назад</span>
+                  </button>
+                  <h2 style={{ fontSize: '1.5rem', margin: 0 }}>История протоколов</h2>
+                </div>
+
+                {historyLoading ? (
+                  <div style={{ display: 'flex', justifyContent: 'center', padding: '4rem' }}>
+                    <Loader2 className="animate-spin text-primary" size={40} />
+                  </div>
+                ) : history.length === 0 ? (
+                  <div style={{ textAlign: 'center', padding: '4rem', color: 'var(--text-muted)' }}>
+                    <Clock size={48} style={{ opacity: 0.2, margin: '0 auto 1.5rem' }} />
+                    <p>История пуста. Создайте свой первый протокол!</p>
+                  </div>
+                ) : (
+                  <div className="archive-list">
+                    {history.map((item) => (
+                      <div key={item.file_id} className="archive-item">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', overflow: 'hidden' }}>
+                          <div style={{ 
+                            width: '40px', 
+                            height: '40px', 
+                            borderRadius: '10px', 
+                            background: 'rgba(79, 70, 229, 0.1)', 
+                            display: 'flex', 
+                            alignItems: 'center', 
+                            justifyContent: 'center',
+                            flexShrink: 0
+                          }}>
+                            <FileText size={20} color="var(--primary)" />
+                          </div>
+                          <div style={{ overflow: 'hidden' }}>
+                            <div style={{ 
+                              fontWeight: 600, 
+                              fontSize: '0.95rem', 
+                              whiteSpace: 'nowrap', 
+                              overflow: 'hidden', 
+                              textOverflow: 'ellipsis',
+                              marginBottom: '0.25rem'
+                            }}>
+                              {item.filename}
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                              <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                                <Calendar size={12} /> {new Date(item.updated_at).toLocaleDateString()}
+                              </span>
+                              <span style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+                                <Clock size={12} /> {new Date(item.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                              </span>
+                              {!item.file_exists && (
+                                <span style={{ color: '#f87171', fontWeight: 600 }}>• Файл удален</span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                          {item.file_exists ? (
+                            <a 
+                              href={`${API_BASE_URL}/download/${item.file_id}?password=${localStorage.getItem('protocolist_password')}`}
+                              className="btn"
+                              style={{ 
+                                padding: '0.5rem 1rem', 
+                                fontSize: '0.8rem', 
+                                background: 'rgba(16, 185, 129, 0.1)', 
+                                border: '1px solid rgba(16, 185, 129, 0.2)',
+                                color: '#10b981',
+                                borderRadius: '8px',
+                                textDecoration: 'none'
+                              }}
+                              download
+                            >
+                              <FileDown size={14} /> Скачать
+                            </a>
+                          ) : (
+                            <button 
+                              className="btn"
+                              disabled
+                              style={{ 
+                                padding: '0.5rem 1rem', 
+                                fontSize: '0.8rem', 
+                                background: 'rgba(255, 255, 255, 0.03)', 
+                                border: '1px solid rgba(255, 255, 255, 0.05)',
+                                color: 'rgba(255, 255, 255, 0.2)',
+                                borderRadius: '8px'
+                              }}
+                            >
+                              Удален
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </motion.div>
+            ) : !fileId ? (
+
               <motion.div 
                 key="upload-section"
                 initial={{ opacity: 0, x: -20 }}
@@ -516,7 +847,7 @@ const App = () => {
                       </div>
                       <div style={{ display: 'flex', gap: '1rem', marginTop: '1.5rem', flexWrap: 'wrap', justifyContent: 'center' }}>
                         <a 
-                          href={`${API_BASE_URL}/download/${fileId}`} 
+                          href={`${API_BASE_URL}/download/${fileId}?password=${localStorage.getItem('protocolist_password')}`} 
                           className="btn" 
                           style={{ background: 'var(--secondary)', color: 'white', display: 'flex', alignItems: 'center', gap: '0.5rem', textDecoration: 'none', width: 'auto', padding: '0.75rem 1.5rem', borderRadius: 12, fontWeight: 500 }}
                           download
@@ -597,6 +928,64 @@ const App = () => {
               </motion.div>
             )}
           </AnimatePresence>
+          {/* Footer Section with Disk Info */}
+          <footer style={{ 
+            marginTop: '3rem', 
+            paddingTop: '1.5rem', 
+            borderTop: '1px solid rgba(255,255,255,0.08)', 
+            display: 'flex', 
+            justifyContent: 'space-between', 
+            alignItems: 'center', 
+            flexWrap: 'wrap',
+            gap: '1rem'
+          }}>
+            <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.3)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span>Protocolist v5.2.0</span>
+              {healthData?.tasks_in_queue > 0 && (
+                <span style={{ 
+                  background: 'rgba(59, 130, 246, 0.1)', 
+                  color: 'var(--primary)', 
+                  padding: '2px 6px', 
+                  borderRadius: '4px',
+                  fontWeight: 600
+                }}>
+                  Очередь: {healthData.tasks_in_queue}
+                </span>
+              )}
+            </div>
+            
+            {healthData && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  <HardDrive size={14} style={{ opacity: 0.6 }} />
+                  <span>Свободно: {healthData.disk_free_gb} ГБ</span>
+                  <div style={{ 
+                    width: '60px', 
+                    height: '6px', 
+                    background: 'rgba(255,255,255,0.05)', 
+                    borderRadius: '3px', 
+                    overflow: 'hidden',
+                    border: '1px solid rgba(255,255,255,0.1)'
+                  }}>
+                    <motion.div 
+                      initial={{ width: 0 }}
+                      animate={{ width: `${healthData.disk_used_percent}%` }}
+                      style={{ 
+                        height: '100%', 
+                        background: healthData.disk_used_percent > 90 ? '#ef4444' : healthData.disk_used_percent > 70 ? '#f59e0b' : 'var(--secondary)',
+                        boxShadow: healthData.disk_used_percent > 90 ? '0 0 8px rgba(239, 68, 68, 0.4)' : 'none'
+                      }} 
+                    />
+                  </div>
+                </div>
+                
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  <Database size={14} style={{ opacity: 0.6 }} />
+                  <span>Всего: {healthData.disk_total_gb} ГБ</span>
+                </div>
+              </div>
+            )}
+          </footer>
         </motion.div>
       </div>
     </>

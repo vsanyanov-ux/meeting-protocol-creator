@@ -142,7 +142,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Протоколист API",
-    version="5.2.0",
+    version="5.3.0",
     lifespan=lifespan
 )
 
@@ -176,6 +176,34 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+# --- Security: Simple App Password (Point 1) ---
+@app.middleware("http")
+async def check_app_password(request: Request, call_next):
+    # Skip check if password is not configured
+    app_pwd = os.getenv("APP_PASSWORD")
+    if not app_pwd:
+        return await call_next(request)
+    
+    # Paths to exclude from password check
+    public_paths = ["/", "/health", "/info", "/docs", "/openapi.json", "/favicon.ico"]
+    if request.url.path in public_paths:
+        return await call_next(request)
+    
+    # Check for password in header
+    provided_pwd = request.headers.get("X-App-Password")
+    if provided_pwd != app_pwd:
+        # Also check query param as fallback for direct downloads if needed
+        provided_pwd_query = request.query_params.get("password")
+        if provided_pwd_query != app_pwd:
+            logger.warning(f"Unauthorized access attempt to {request.url.path} from {request.client.host}")
+            return Response(
+                content=json.dumps({"detail": "Несанкционированный доступ. Требуется пароль."}, ensure_ascii=False),
+                status_code=401,
+                media_type="application/json"
+            )
+    
+    return await call_next(request)
 
 def get_provider(provider_type: Optional[str] = None, device: Optional[str] = None) -> BaseAIProvider:
     if not provider_type:
@@ -335,18 +363,63 @@ class StatusManager:
             logger.error(f"Error counting active tasks: {e}")
             return 0
 
+    def get_history(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Returns the list of successfully completed tasks."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("""
+                    SELECT file_id, data, updated_at 
+                    FROM tasks 
+                    WHERE json_extract(data, '$.status') = 'completed'
+                    ORDER BY updated_at DESC 
+                    LIMIT ?
+                """, (limit,))
+                rows = cursor.fetchall()
+                history = []
+                for row in rows:
+                    file_id, data_json, updated_at = row
+                    data = json.loads(data_json)
+                    
+                    # Check if file still exists on disk
+                    docx_path = data.get("docx_path")
+                    file_exists = os.path.exists(docx_path) if docx_path else False
+                    
+                    history.append({
+                        "file_id": file_id,
+                        "filename": data.get("filename", "Unknown"),
+                        "status": data.get("status"),
+                        "updated_at": updated_at,
+                        "file_exists": file_exists,
+                        "message": data.get("message")
+                    })
+                return history
+        except Exception as e:
+            logger.error(f"Error fetching history: {e}")
+            return []
+
 status_manager = StatusManager()
 
 @app.get("/health")
 async def health_check():
+    # Get disk usage for the current directory
+    usage = shutil.disk_usage(".")
     return {
         "status": "healthy",
         "timestamp": time.time(),
-        "tasks_in_queue": status_manager.get_all_active_count()
+        "tasks_in_queue": status_manager.get_all_active_count(),
+        "disk_free_gb": round(usage.free / (1024**3), 2),
+        "disk_total_gb": round(usage.total / (1024**3), 2),
+        "disk_used_percent": round((usage.used / usage.total) * 100, 1)
     }
+
+@app.get("/history")
+async def get_history(limit: int = 50):
+    """Returns the history of completed protocols."""
+    return status_manager.get_history(limit=limit)
 
 @app.get("/info")
 async def get_info():
+
     location_raw = os.getenv("BACKEND_LOCATION", "local").lower()
     return {
         "location": "Локально" if location_raw == "local" else "Онлайн",

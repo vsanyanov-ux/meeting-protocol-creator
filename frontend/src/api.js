@@ -6,6 +6,15 @@ const api = axios.create({
   baseURL: API_BASE_URL,
 });
 
+// Add interceptor to include password in all axios requests
+api.interceptors.request.use((config) => {
+  const pwd = localStorage.getItem('protocolist_password');
+  if (pwd) {
+    config.headers['X-App-Password'] = pwd;
+  }
+  return config;
+});
+
 export const uploadMeeting = async (file, email, provider, existingFileId = null, forceCpu = false, sessionId = null, sendEmail = true) => {
   const formData = new FormData();
   
@@ -21,10 +30,12 @@ export const uploadMeeting = async (file, email, provider, existingFileId = null
   formData.append('send_email', sendEmail ? 'true' : 'false');
 
   const url = `${API_BASE_URL}/process-meeting`;
+  const pwd = localStorage.getItem('protocolist_password');
 
   const response = await fetch(url, {
     method: 'POST',
     body: formData,
+    headers: pwd ? { 'X-App-Password': pwd } : {},
     // Note: Do NOT set Content-Type header, fetch will handle it with boundary
   });
 
@@ -48,4 +59,15 @@ export const getSystemInfo = async () => {
   return response.data;
 };
 
+export const getHistory = async (limit = 50) => {
+  const response = await api.get(`/history?limit=${limit}`);
+  return response.data;
+};
+
+export const getHealth = async () => {
+  const response = await api.get('/health');
+  return response.data;
+};
+
 export default api;
+

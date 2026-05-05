@@ -48,3 +48,7 @@ yarn-error.log*
 .vscode/
 .idea/
 .DS_Store
+
+# Nginx Proxy Manager
+npm_data/
+letsencrypt/

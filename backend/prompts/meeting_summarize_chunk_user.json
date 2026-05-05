@@ -1,0 +1,7 @@
+{
+  "name": "meeting_summarize_chunk_user",
+  "prompt": "ВЫДЕЛИ ГЛАВНОЕ из части {{index}} (из {{total}}):\n\n{{chunk}}",
+  "version": 1,
+  "config": {},
+  "synced_at": 1777964151.4581234
+}

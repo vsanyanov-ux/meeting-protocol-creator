@@ -1,0 +1,7 @@
+{
+  "name": "meeting_create_protocol_user",
+  "prompt": "Внимательно изучи {{source_type}} и {{action_type}} НА РУССКОМ ЯЗЫКЕ:\n\n{{text}}",
+  "version": 1,
+  "config": {},
+  "synced_at": 1777964151.4581234
+}
