@@ -308,7 +308,7 @@ class YandexProvider(BaseAIProvider):
             chunks.append("".join(current_chunk))
         return chunks
 
-    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None, trace: Any = None) -> Dict[str, Any]:
+    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None, trace: Any = None, context: Optional[str] = None) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
         fallback_system = "Ты — профессиональный секретарь. Составь протокол совещания на русском языке."
         system_text = get_prompt("meeting_create_protocol", fallback=fallback_system)
@@ -317,6 +317,9 @@ class YandexProvider(BaseAIProvider):
         user_text = user_prompt.replace("{{text}}", transcription)\
                                .replace("{{source_type}}", "расшифровку")\
                                .replace("{{action_type}}", "составь подробный протокол")
+
+        if context:
+            user_text = f"КОНТЕКСТ СОВЕЩАНИЯ (участники, тема):\n{context}\n\n{user_text}"
 
         messages = [
             {"role": "system", "text": system_text},

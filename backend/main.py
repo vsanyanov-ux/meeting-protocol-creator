@@ -596,12 +596,12 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                             
                             if not transcription: raise Exception("Transcription failed")
 
-                            # B. Transcript Refinement (Optional but recommended with context)
-                            if context:
-                                status_manager.update(file_id, {"status": "transcribing", "message": "Улучшение текста..."})
-                                trace.start_span("transcript_refinement", as_type="generation")
-                                transcription = await current_provider.refine_transcript(transcription, context, trace)
-                                trace.end_span("transcript_refinement")
+                            # B. Transcript Refinement (Disabled for now - could be too aggressive)
+                            # if context:
+                            #     status_manager.update(file_id, {"status": "transcribing", "message": "Улучшение текста..."})
+                            #     trace.start_span("transcript_refinement", as_type="generation")
+                            #     transcription = await current_provider.refine_transcript(transcription, context, trace)
+                            #     trace.end_span("transcript_refinement")
 
                             # B. Protocol Generation
                             emergency_log("GENERATION START")
@@ -611,7 +611,8 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                                 transcription, 
                                 lambda s, m: status_manager.update(file_id, {"status": s, "message": m}), 
                                 file_id,
-                                trace=trace
+                                trace=trace,
+                                context=context
                             )
                             protocol_text = gen_result.get("text")
                             emergency_log("GENERATION COMPLETE")

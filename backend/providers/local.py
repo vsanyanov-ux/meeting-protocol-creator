@@ -342,14 +342,14 @@ class LocalProvider(BaseAIProvider):
             chunks.append("".join(current_chunk))
         return chunks
 
-    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None, trace: Any = None) -> Dict[str, Any]:
+    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None, trace: Any = None, context: Optional[str] = None) -> Dict[str, Any]:
         CHUNK_THRESHOLD = 15000
         if self.device == "cuda":
             await self._cleanup_memory()
             await asyncio.sleep(1)
             
         if len(transcription) <= CHUNK_THRESHOLD:
-            return await self._create_protocol_single(transcription)
+            return await self._create_protocol_single(transcription, context=context, trace=trace)
         else:
             logger.info(f"LONG TRANSCRIPT DETECTED. Using chunked processing...")
             chunks = self._chunk_text(transcription, max_chars=CHUNK_THRESHOLD)
@@ -375,7 +375,7 @@ class LocalProvider(BaseAIProvider):
                 chunk = chunks[i]
                 if status_updater:
                     status_updater("summarizing", f"Анализ части {i+1} из {len(chunks)}...")
-                summary_part = await self._summarize_chunk(chunk, i+1, len(chunks), trace=trace)
+                summary_part = await self._summarize_chunk(chunk, i+1, len(chunks), trace=trace, context=context)
                 partial_summaries.append(summary_part)
                 if storage_path:
                     with open(storage_path, "w", encoding="utf-8") as f:
@@ -385,13 +385,13 @@ class LocalProvider(BaseAIProvider):
             if status_updater:
                 status_updater("summarizing", "Формирование финального протокола...")
             
-            result = await self._create_protocol_single(combined_context, is_consolidated=True, trace=trace)
+            result = await self._create_protocol_single(combined_context, is_consolidated=True, trace=trace, context=context)
             if storage_path and os.path.exists(storage_path):
                 try: os.remove(storage_path)
                 except: pass
             return result
 
-    async def _summarize_chunk(self, chunk: str, index: int, total: int, trace: Any = None) -> str:
+    async def _summarize_chunk(self, chunk: str, index: int, total: int, trace: Any = None, context: Optional[str] = None) -> str:
         fallback_system = f"Ты — профессиональный секретарь. Выдели главное из части {index} (из {total})."
         system_text = get_prompt("meeting_summarize_chunk", fallback=fallback_system)
         
@@ -401,6 +401,9 @@ class LocalProvider(BaseAIProvider):
 
         user_prompt = get_prompt("meeting_summarize_chunk_user", fallback="ВЫДЕЛИ ГЛАВНОЕ:\n\n{{chunk}}")
         user_text = user_prompt.replace("{{chunk}}", chunk)
+        
+        if context:
+            user_text = f"КОНТЕКСТ СОВЕЩАНИЯ (участники, тема):\n{context}\n\n{user_text}"
 
         messages = [{"role": "system", "content": system_text}, {"role": "user", "content": user_text}]
         res = await self._call_ollama(messages, temperature=0.1)
@@ -408,7 +411,7 @@ class LocalProvider(BaseAIProvider):
             trace.log_generation(messages, res.get("text", ""), self.ollama_model, res.get("latency_ms", 0), res.get("input_tokens", 0), res.get("output_tokens", 0), f"Summarize Chunk {index}/{total}")
         return res.get("text", "Ошибка обработки части.")
 
-    async def _create_protocol_single(self, text: str, is_consolidated: bool = False, trace: Any = None) -> Dict[str, Any]:
+    async def _create_protocol_single(self, text: str, is_consolidated: bool = False, trace: Any = None, context: Optional[str] = None) -> Dict[str, Any]:
         prompt_prefix = "составь подробный протокол" if not is_consolidated else "составь ФИНАЛЬНЫЙ СВОДНЫЙ протокол"
         source_type = "расшифровки" if not is_consolidated else "тезисов"
         
@@ -419,6 +422,9 @@ class LocalProvider(BaseAIProvider):
         user_text = user_prompt.replace("{{text}}", text)\
                                .replace("{{source_type}}", source_type)\
                                .replace("{{action_type}}", prompt_prefix)
+
+        if context:
+            user_text = f"КОНТЕКСТ СОВЕЩАНИЯ (участники, тема):\n{context}\n\n{user_text}"
 
         messages = [{"role": "system", "content": system_text}, {"role": "user", "content": user_text}]
         res = await self._call_ollama(messages, temperature=0.2)

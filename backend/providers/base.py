@@ -42,7 +42,14 @@ class BaseAIProvider(ABC):
         pass
 
     @abstractmethod
-    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None, trace: Any = None) -> Dict[str, Any]:
+    async def create_protocol(
+        self, 
+        transcription: str, 
+        status_updater: Optional[Callable[[str, str], None]] = None, 
+        file_id: Optional[str] = None, 
+        trace: Any = None,
+        context: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Generate protocol from text.
         Returns dict with: text (str), latency_ms (int), input_tokens (int), output_tokens (int), messages (list)
