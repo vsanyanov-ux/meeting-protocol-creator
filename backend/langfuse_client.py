@@ -46,10 +46,15 @@ class PipelineTrace:
     def __enter__(self):
         if self.client:
             try:
-                # Use start_span as root if trace() is missing
+                # In SDK 3.x, start_span doesn't take id/session_id directly.
+                # We use trace_context for trace_id and update_trace for other fields.
                 self.trace_obs = self.client.start_span(
                     name=self.trace_name,
-                    id=self.trace_id, # Some SDKs allow passing ID here
+                    trace_context={"trace_id": self.trace_id}
+                )
+                
+                # Set session_id and metadata via update_trace
+                self.trace_obs.update_trace(
                     session_id=self.session_id,
                     metadata={
                         **self.metadata,
@@ -59,42 +64,28 @@ class PipelineTrace:
                 )
                 logger.info(f"Started Langfuse trace: {self.trace_id} (Session: {self.session_id})")
             except Exception as e:
-                # Fallback to start_observation if start_span fails
-                try:
-                    self.trace_obs = self.client.start_observation(
-                        name=self.trace_name,
-                        as_type="span",
-                        trace_context={"trace_id": self.trace_id},
-                        metadata=self.metadata
-                    )
-                except Exception as e2:
-                    logger.error(f"Failed to start trace: {e2}")
+                logger.error(f"Failed to start trace: {e}")
         return self
         
     def start_span(self, name, as_type="span", metadata=None):
         if not self.client or not self.trace_obs: return None
         try:
-            if as_type == "generation":
-                span = self.trace_obs.start_generation(
-                    name=name,
-                    metadata=metadata or {}
-                )
-            else:
-                span = self.trace_obs.start_span(
-                    name=name,
-                    metadata=metadata or {}
-                )
+            # Using start_observation as standard in v3
+            span = self.trace_obs.start_observation(
+                name=name,
+                as_type=as_type,
+                metadata=metadata or {}
+            )
             self.current_spans[name] = span
             return span
         except Exception as e:
-            logger.error(f"Failed to start span {name}: {e}")
+            logger.error(f"Failed to start {as_type} {name}: {e}")
             return None
             
     def end_span(self, name, metadata=None, level="INFO"):
         if name in self.current_spans:
             try:
                 span = self.current_spans[name]
-                # Try update first if metadata is provided
                 if metadata:
                     try:
                         span.update(metadata=metadata, level=level)
@@ -110,28 +101,32 @@ class PipelineTrace:
             self.end_span(span_name, metadata={"error": error_msg}, level="ERROR")
         elif self.trace_obs:
             try:
-                self.trace_obs.update(level="ERROR", status_message=error_msg)
+                self.trace_obs.update_trace(status_message=error_msg)
             except:
                 pass
 
     def log_generation(self, input_messages, output_text, model, latency_ms=None, input_tokens=None, output_tokens=None, name="Generation"):
         if not self.trace_obs: return
         try:
-            gen = self.trace_obs.start_generation(
+            # SDK 3.x uses usage_details (Dict[str, int])
+            usage_data = {
+                "input": int(input_tokens or 0),
+                "output": int(output_tokens or 0),
+                "total": int((input_tokens or 0) + (output_tokens or 0))
+            }
+            
+            logger.info(f"Logging generation to Langfuse: {name} (Model: {model}, Tokens: {usage_data['total']})")
+            
+            # SDK v3 style: start_observation and update for usage
+            gen = self.trace_obs.start_observation(
                 name=name,
+                as_type="generation",
                 model=model,
                 input=input_messages,
                 output=output_text
             )
-            # Try to update usage if possible
-            try:
-                gen.update(usage={
-                    "promptTokens": input_tokens or 0,
-                    "completionTokens": output_tokens or 0,
-                    "totalTokens": (input_tokens or 0) + (output_tokens or 0)
-                })
-            except:
-                pass
+            # Use usage_details instead of usage
+            gen.update(usage_details=usage_data)
             gen.end()
         except Exception as e:
             logger.error(f"Failed to log generation: {e}")
@@ -139,18 +134,15 @@ class PipelineTrace:
     def log_stt(self, duration_sec, model="whisper"):
         if not self.trace_obs: return
         try:
-            gen = self.trace_obs.start_generation(
-                name="Transcription",
-                model=model,
-                metadata={"duration_sec": duration_sec}
+            gen = self.trace_obs.start_observation(
+                name="Speech-to-Text",
+                as_type="generation",
+                model=model
             )
-            try:
-                gen.update(usage={
-                    "unit": "SECONDS",
-                    "input": int(duration_sec)
-                })
-            except:
-                pass
+            # usage_details for STT (usually just input)
+            gen.update(usage_details={
+                "input": int(duration_sec)
+            }, metadata={"unit": "SECONDS"})
             gen.end()
         except Exception as e:
             logger.error(f"Failed to log STT: {e}")

@@ -368,7 +368,7 @@ class StatusManager:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.execute("""
-                    SELECT file_id, data, updated_at 
+                    SELECT file_id, data, strftime('%Y-%m-%dT%H:%M:%SZ', updated_at) as updated_at 
                     FROM tasks 
                     WHERE json_extract(data, '$.status') = 'completed'
                     ORDER BY updated_at DESC 
@@ -479,7 +479,7 @@ async def process_meeting(
     existing_file_id: str = Form(None),
     force_cpu: bool = Form(False),
     session_id: str = Form(None),
-    should_send_email: bool = Form(True)
+    should_send_email: bool = Form(True, alias="send_email")
 ):
     # 0. Check Queue Size (Point 2: VRAM/Queue exhaustion protection)
     active_tasks = status_manager.get_all_active_count()
@@ -534,7 +534,7 @@ async def process_meeting(
     })
 
     metadata = {"file_id": file_id, "original_filename": file.filename if file else file_id}
-    background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu, session_id, send_email)
+    background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu, session_id, should_send_email)
     return {"status": "processing", "file_id": file_id}
 
 class DummyTrace:

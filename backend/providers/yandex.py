@@ -245,7 +245,6 @@ class YandexProvider(BaseAIProvider):
         }
         result = {"text": None, "latency_ms": 0, "input_tokens": None, "output_tokens": None, "messages": messages}
         t_start = time.time()
-        
         max_retries = 3
         for attempt in range(max_retries):
             try:
@@ -256,10 +255,20 @@ class YandexProvider(BaseAIProvider):
                     data = response.json()
                     result["text"] = data["result"]["alternatives"][0]["message"]["text"]
                     usage = data["result"].get("usage", {})
-                    result["input_tokens"] = usage.get("inputTextTokens")
-                    result["output_tokens"] = usage.get("completionTokens")
+                    result["input_tokens"] = int(usage.get("inputTextTokens", 0))
+                    result["output_tokens"] = int(usage.get("completionTokens", 0))
+                    
+                    logger.info(f"Yandex tokens: in={result['input_tokens']}, out={result['output_tokens']}")
                     if trace:
-                        trace.log_generation(messages, result["text"], self.gpt_model, result["latency_ms"], result["input_tokens"], result["output_tokens"], "Yandex GPT Protocol Generation")
+                        trace.log_generation(
+                            messages, 
+                            result["text"], 
+                            self.gpt_model, 
+                            result["latency_ms"], 
+                            result["input_tokens"], 
+                            result["output_tokens"], 
+                            "Yandex GPT Protocol Generation"
+                        )
                     return result
                 elif response.status_code in [429, 500, 502, 503, 504]:
                     logger.warning(f"GPT retryable error {response.status_code} (attempt {attempt+1}/{max_retries})")
@@ -273,6 +282,8 @@ class YandexProvider(BaseAIProvider):
                 logger.error(f"GPT Fatal Error: {response.status_code} - {response.text}")
                 break
             except Exception as e:
+                if isinstance(e, ProviderQuotaError):
+                    raise
                 logger.warning(f"GPT Attempt {attempt+1} failed: {e}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(2 ** attempt)
@@ -308,41 +319,58 @@ class YandexProvider(BaseAIProvider):
             "scores": {}
         }
         t_start = time.time()
-        try:
-            response = await asyncio.to_thread(requests.post, self.gpt_url, headers=headers, json=prompt, timeout=120)
-            result["latency_ms"] = int((time.time() - t_start) * 1000)
-            if response.status_code == 200:
-                data = response.json()
-                text = data["result"]["alternatives"][0]["message"]["text"]
+        max_retries = 3
+        
+        for attempt in range(max_retries):
+            try:
+                response = await asyncio.to_thread(requests.post, self.gpt_url, headers=headers, json=prompt, timeout=120)
+                result["latency_ms"] = int((time.time() - t_start) * 1000)
                 
-                # Попытка извлечь JSON с оценками
-                import re
-                try:
-                    json_match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
-                    if json_match:
-                        score_data = json.loads(json_match.group(1))
-                        result["scores"] = score_data.get("scores", {})
-                        logger.info(f"✅ Auditor scores extracted: {result['scores']}")
-                except Exception as je:
-                    logger.warning(f"Could not parse auditor scores: {je}")
+                if response.status_code == 200:
+                    data = response.json()
+                    text = data["result"]["alternatives"][0]["message"]["text"]
+                    
+                    # Попытка извлечь JSON с оценками
+                    import re
+                    try:
+                        json_match = re.search(r"```json\s*(\{.*?\})\s*```", text, re.DOTALL)
+                        if json_match:
+                            score_data = json.loads(json_match.group(1))
+                            result["scores"] = score_data.get("scores", {})
+                            logger.info(f"✅ Auditor scores extracted: {result['scores']}")
+                    except Exception as je:
+                        logger.warning(f"Could not parse auditor scores: {je}")
 
-                # Очистка текста от JSON и технических заголовков для пользователя
-                # 1. Удаляем блок ```json ... ```
-                clean_report = re.sub(r"```json\s*\{.*?\}\s*```", "", text, flags=re.DOTALL)
-                # 2. Удаляем заголовки типа "### JSON для системы" или просто "JSON"
-                clean_report = re.sub(r"###?\s*JSON.*?\n", "", clean_report, flags=re.IGNORECASE)
-                result["verification_report"] = clean_report.strip()
+                    # Очистка текста от JSON и технических заголовков для пользователя
+                    clean_report = re.sub(r"```json\s*\{.*?\}\s*```", "", text, flags=re.DOTALL)
+                    clean_report = re.sub(r"###?\s*JSON.*?\n", "", clean_report, flags=re.IGNORECASE)
+                    result["verification_report"] = clean_report.strip()
 
-                usage = data["result"].get("usage", {})
-                result["input_tokens"] = usage.get("inputTextTokens")
-                result["output_tokens"] = usage.get("completionTokens")
-                if trace:
-                    trace.log_generation(messages, text, self.gpt_model, result["latency_ms"], result["input_tokens"], result["output_tokens"], "Yandex GPT Verification")
-                    if result.get("scores"):
-                        for k, v in result["scores"].items():
-                            trace.score(k, v)
-        except Exception as e:
-            logger.error(f"Verification Error: {e}")
-            
+                    usage = data["result"].get("usage", {})
+                    result["input_tokens"] = usage.get("inputTextTokens")
+                    result["output_tokens"] = usage.get("completionTokens")
+                    if trace:
+                        trace.log_generation(messages, text, self.gpt_model, result["latency_ms"], result["input_tokens"], result["output_tokens"], "Yandex GPT Verification")
+                        if result.get("scores"):
+                            for k, v in result["scores"].items():
+                                trace.score(k, v)
+                    return result
+                
+                elif response.status_code in [429, 500, 502, 503, 504]:
+                    logger.warning(f"Auditor retryable error {response.status_code} (attempt {attempt+1}/{max_retries})")
+                    if attempt < max_retries - 1:
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                
+                logger.error(f"Auditor Fatal Error: {response.status_code} - {response.text}")
+                break
+                
+            except Exception as e:
+                logger.error(f"Verification Attempt {attempt+1} Error: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(2 ** attempt)
+                    continue
+                break
+                
         return result
 

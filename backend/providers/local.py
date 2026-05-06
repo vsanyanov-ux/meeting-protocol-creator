@@ -247,6 +247,8 @@ class LocalProvider(BaseAIProvider):
                         result["input_tokens"] = resp_json.get("prompt_eval_count", 0)
                         result["output_tokens"] = resp_json.get("eval_count", 0)
                         result["latency_ms"] = int((time.time() - t_start) * 1000)
+                        # Log at INFO level so it's visible in app.log and console by default
+                        logger.info(f"Ollama tokens: in={result['input_tokens']}, out={result['output_tokens']} (Keys: {list(resp_json.keys())})")
                         return result
                     
                     if response.status_code == 500 and attempt < max_retries - 1:
