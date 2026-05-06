@@ -13,6 +13,7 @@ import torch
 import torchaudio
 from faster_whisper import WhisperModel
 import ollama
+import math
 
 from .base import BaseAIProvider
 from exceptions import HardwareError
@@ -170,32 +171,44 @@ class LocalProvider(BaseAIProvider):
                     audio_path, 
                     beam_size=5, 
                     language="ru",
-                    initial_prompt=initial_prompt
+                    initial_prompt=initial_prompt,
+                    vad_filter=True,
+                    vad_parameters=dict(min_silence_duration_ms=500)
                 )
                 # Convert to plain data (list of dicts) immediately to decouple from model internals
                 plain_segments = []
                 for s in segments_gen:
-                    plain_segments.append({"start": s.start, "text": s.text})
+                    # Convert logprob to human-readable percentage
+                    # Whisper uses log-probability for tokens. Exp(avg_logprob) is a decent proxy for confidence.
+                    conf_percent = min(100, max(0, int(math.exp(s.avg_logprob) * 100)))
+                    plain_segments.append({
+                        "start": s.start, 
+                        "text": s.text, 
+                        "confidence": conf_percent
+                    })
                 return plain_segments, info
 
             segments, info = await asyncio.to_thread(run_transcription)
             logger.info(f"Segments generated: {len(segments)}. Language: {info.language}")
             
             full_text = []
+            total_conf = 0
             for i, segment in enumerate(segments):
                 # Generate timestamp for every segment
                 start_time = segment["start"]
                 text = segment["text"]
+                conf = segment["confidence"]
+                total_conf += conf
+                
                 timestamp = f"[{int(start_time // 60):02d}:{int(start_time % 60):02d}]"
-                full_text.append(f"{timestamp} {text.strip()}")
+                full_text.append(f"{timestamp} (Conf: {conf}%) {text.strip()}")
                 
                 if i % 10 == 0 and i > 0:
                     status_updater("transcribing", f"Обработано {i} фрагментов речи...")
-                
-            # transcription = "\n".join(full_text).strip() # Moved below
-            
+
             result_str = "\n".join(full_text).strip()
-            logger.info(f"--- TRANSCRIPTION COMPLETE: Success ({len(result_str)} chars) ---")
+            avg_conf = total_conf / len(segments) if segments else 0
+            logger.info(f"--- TRANSCRIPTION COMPLETE: Success ({len(segments)} segments, Avg Conf: {avg_conf:.1f}%) ---")
             
             # Note: We don't do aggressive cleanup here because it causes SegFaults on some drivers.
             # Memory will be reclaimed during the next task's pre-cleanup or by GC naturally.
@@ -392,7 +405,7 @@ class LocalProvider(BaseAIProvider):
             return result
 
     async def _summarize_chunk(self, chunk: str, index: int, total: int, trace: Any = None, context: Optional[str] = None) -> str:
-        fallback_system = f"Ты — профессиональный секретарь. Выдели главное из части {index} (из {total})."
+        fallback_system = f"Ты — профессиональный секретарь. Выдели главное из части {index} (из {total}). Обращай внимание на уровень уверенности (Conf: %). Если он ниже 60%, помечай факты как сомнительные."
         system_text = get_prompt("meeting_summarize_chunk", fallback=fallback_system)
         
         # Если промт из Langfuse, он может содержать {{index}} и {{total}}
@@ -415,7 +428,7 @@ class LocalProvider(BaseAIProvider):
         prompt_prefix = "составь подробный протокол" if not is_consolidated else "составь ФИНАЛЬНЫЙ СВОДНЫЙ протокол"
         source_type = "расшифровки" if not is_consolidated else "тезисов"
         
-        fallback_system = "Ты — профессиональный секретарь. Составь протокол на русском языке."
+        fallback_system = "Ты — профессиональный секретарь. Составь протокол на русском языке. ЗАПРЕЩЕНО выдумывать сроки. Обращай внимание на Conf (уверенность) в тексте — если она ниже 60%, пиши '(требуется уточнение)'."
         system_text = get_prompt("meeting_create_protocol", fallback=fallback_system)
         
         user_prompt = get_prompt("meeting_create_protocol_user", fallback=f"Изучи текст и {prompt_prefix} НА РУССКОМ:\n\n{{{{text}}}}")
@@ -432,15 +445,20 @@ class LocalProvider(BaseAIProvider):
             trace.log_generation(messages, res.get("text", ""), self.ollama_model, res.get("latency_ms", 0), res.get("input_tokens", 0), res.get("output_tokens", 0), "Final Protocol Generation")
         return res
 
-    async def verify_protocol(self, transcription: str, protocol: str, trace: Any = None) -> Dict[str, Any]:
+    async def verify_protocol(self, transcription: str, protocol: str, trace: Any = None, context: Optional[str] = None) -> Dict[str, Any]:
         if self.device == "cuda":
             await self._cleanup_memory()
             
-        fallback_system = "Ты — корпоративный аудитор. Сравни расшифровку и протокол. Выдай отчет на русском."
+        fallback_system = "Ты — корпоративный аудитор. Сравни расшифровку и протокол. Если в расшифровке Conf < 50%, а в протоколе утвержден важный факт — отметь это как риск галлюцинации."
         system_text = get_prompt("meeting_verify_protocol", fallback=fallback_system)
         
         user_prompt = get_prompt("meeting_verify_protocol_user", fallback="РАСШИФРОВКА:\n{{transcription}}\n\nПРОТОКОЛ:\n{{protocol}}")
         user_text = user_prompt.replace("{{transcription}}", transcription).replace("{{protocol}}", protocol)
+        
+        if context:
+            user_text = user_text.replace("{{context}}", context)
+        else:
+            user_text = user_text.replace("{{context}}", "Не предоставлен")
         
         messages = [{"role": "system", "content": system_text}, {"role": "user", "content": user_text}]
         res = await self._call_ollama(messages, temperature=0.1)

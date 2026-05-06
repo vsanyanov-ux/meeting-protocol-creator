@@ -310,7 +310,7 @@ class YandexProvider(BaseAIProvider):
 
     async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None, trace: Any = None, context: Optional[str] = None) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
-        fallback_system = "Ты — профессиональный секретарь. Составь протокол совещания на русском языке."
+        fallback_system = "Ты — профессиональный секретарь. Составь протокол совещания на русском языке. ЗАПРЕЩЕНО выдумывать сроки (дедлайны) — если они не озвучены, пиши 'Не указан'."
         system_text = get_prompt("meeting_create_protocol", fallback=fallback_system)
         
         user_prompt = get_prompt("meeting_create_protocol_user", fallback="Составь протокол на основе текста:\n\n{{text}}")
@@ -380,13 +380,19 @@ class YandexProvider(BaseAIProvider):
             
         return result
 
-    async def verify_protocol(self, transcription: str, protocol: str, trace: Any = None) -> Dict[str, Any]:
+    async def verify_protocol(self, transcription: str, protocol: str, trace: Any = None, context: Optional[str] = None) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
-        fallback_system = "Ты — корпоративный аудитор. Сравни расшифровку и протокол. Выдай отчет на русском."
+        fallback_system = "Ты — корпоративный аудитор. Сравни расшифровку и протокол. Выдай отчет на русском. Особое внимание удели галлюцинациям в сроках исполнения."
         system_text = get_prompt("meeting_verify_protocol", fallback=fallback_system)
         
         user_prompt = get_prompt("meeting_verify_protocol_user", fallback="РАСШИФРОВКА:\n{{transcription}}\n\nПРОТОКОЛ:\n{{protocol}}")
         user_text = user_prompt.replace("{{transcription}}", transcription).replace("{{protocol}}", protocol)
+        
+        if context:
+            user_text = user_text.replace("{{context}}", context)
+        else:
+            # Fallback if the prompt expects {{context}} but none is provided
+            user_text = user_text.replace("{{context}}", "Не предоставлен")
 
         messages = [
             {"role": "system", "text": system_text},

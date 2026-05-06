@@ -596,12 +596,12 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                             
                             if not transcription: raise Exception("Transcription failed")
 
-                            # B. Transcript Refinement (Disabled for now - could be too aggressive)
-                            # if context:
-                            #     status_manager.update(file_id, {"status": "transcribing", "message": "Улучшение текста..."})
-                            #     trace.start_span("transcript_refinement", as_type="generation")
-                            #     transcription = await current_provider.refine_transcript(transcription, context, trace)
-                            #     trace.end_span("transcript_refinement")
+                            # B. Transcript Refinement (Triggered only when context is provided)
+                            if context:
+                                status_manager.update(file_id, {"status": "transcribing", "message": "Улучшение текста (AI)..."})
+                                trace.start_span("transcript_refinement", as_type="generation")
+                                transcription = await current_provider.refine_transcript(transcription, context, trace)
+                                trace.end_span("transcript_refinement")
 
                             # B. Protocol Generation
                             emergency_log("GENERATION START")
@@ -623,7 +623,7 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                             emergency_log("AUDIT START")
                             status_manager.update(file_id, {"status": "verifying", "message": "Аудит протокола..."})
                             trace.start_span("verification", as_type="generation")
-                            audit_res = await current_provider.verify_protocol(transcription, protocol_text, trace=trace)
+                            audit_res = await current_provider.verify_protocol(transcription, protocol_text, trace=trace, context=context)
                             emergency_log("AUDIT COMPLETE")
 
                     emergency_log("GPU LOCK RELEASED")
@@ -648,10 +648,10 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                         recipient = recipient_email or os.getenv("RECIPIENT_EMAIL", "vanyanov@yandex.ru")
                         success = await asyncio.to_thread(send_email, recipient, f"Протокол: {metadata.get('original_filename', 'Meeting')}", "Ваш протокол готов.", docx_path)
                         trace.end_span("email_send", {"success": success})
-                        status_manager.update(file_id, {"status": "completed", "message": "Успех! Отправлено на почту." if success else "Протокол готов, почта не ушла."})
+                        status_manager.update(file_id, {"status": "completed", "message": "" if success else "Почта не ушла."})
                         trace.finish("completed" if success else "email_error")
                     else:
-                        status_manager.update(file_id, {"status": "completed", "message": "Успех!"})
+                        status_manager.update(file_id, {"status": "completed", "message": ""})
                         trace.finish("completed")
 
                     # Cleanup

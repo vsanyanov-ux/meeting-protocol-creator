@@ -681,12 +681,12 @@ const App = () => {
 
                   <div className="input-field-group" style={{ marginBottom: '1.5rem' }}>
                     <label style={{ display: 'block', marginBottom: '0.75rem', fontSize: '0.9rem', fontWeight: 500, color: 'var(--text-muted)' }}>
-                      Контекст совещания (участники, тема):
+                      Контекст совещания:
                     </label>
                     <textarea 
                       value={meetingContext}
                       onChange={(e) => setMeetingContext(e.target.value)}
-                      placeholder="Например: Участники - Василий Иванов, Петр Сидоров. Тема - Обсуждение проекта ЦНИИТМАШ."
+                      placeholder="Например: Тема - Обсуждение конвейерной линии. Участники - Иван Петров, Анна Сидорова. Термины: ПЛК, SCADA."
                       className="glass-input"
                       style={{ 
                         width: '100%', 
@@ -702,6 +702,9 @@ const App = () => {
                         lineHeight: '1.5'
                       }}
                     />
+                    <div style={{ marginTop: '0.5rem', fontSize: '0.75rem', color: 'rgba(255,255,255,0.4)', fontStyle: 'italic' }}>
+                      Тема совещания, список терминов и имен участников значительно повышают точность распознавания.
+                    </div>
                   </div>
 
                   <div 

@@ -57,7 +57,7 @@ class BaseAIProvider(ABC):
         pass
 
     @abstractmethod
-    async def verify_protocol(self, transcription: str, protocol: str, trace: Any = None) -> Dict[str, Any]:
+    async def verify_protocol(self, transcription: str, protocol: str, trace: Any = None, context: Optional[str] = None) -> Dict[str, Any]:
         """
         Verify protocol against transcription.
         Returns dict with: verification_report (str), input_tokens (int), output_tokens (int)

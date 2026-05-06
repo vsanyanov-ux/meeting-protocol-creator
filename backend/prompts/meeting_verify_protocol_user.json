@@ -1,6 +1,6 @@
 {
   "name": "meeting_verify_protocol_user",
-  "prompt": "РАСШИФРОВКА:\n{{transcription}}\n\nПРОТОКОЛ:\n{{protocol}}",
+  "prompt": "КОНТЕКСТ:\n{{context}}\n\nРАСШИФРОВКА:\n{{transcription}}\n\nПРОТОКОЛ:\n{{protocol}}",
   "version": 1,
   "config": {},
   "synced_at": 1777964151.4581234
