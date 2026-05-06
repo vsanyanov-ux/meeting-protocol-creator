@@ -144,7 +144,8 @@ class LocalProvider(BaseAIProvider):
         audio_path: str, 
         file_id: str, 
         status_updater: Callable[[str, str], None],
-        trace: Any
+        trace: Any,
+        initial_prompt: Optional[str] = None
     ) -> Optional[str]:
         if trace:
             # Estimate duration for logging (optional, but good for cost)
@@ -165,7 +166,12 @@ class LocalProvider(BaseAIProvider):
             t_start = time.time()
             
             def run_transcription():
-                segments_gen, info = model.transcribe(audio_path, beam_size=5, language="ru")
+                segments_gen, info = model.transcribe(
+                    audio_path, 
+                    beam_size=5, 
+                    language="ru",
+                    initial_prompt=initial_prompt
+                )
                 # Convert to plain data (list of dicts) immediately to decouple from model internals
                 plain_segments = []
                 for s in segments_gen:
@@ -199,6 +205,47 @@ class LocalProvider(BaseAIProvider):
             logger.error(f"Local transcription error: {e}")
             trace.log_error("transcription", str(e))
             raise e
+
+    async def refine_transcript(
+        self, 
+        transcription: str, 
+        context: Optional[str] = None,
+        trace: Any = None
+    ) -> str:
+        if not context:
+            return transcription
+            
+        logger.info(f"Refining transcript with context (length: {len(context)})")
+        
+        # Refinement is best done in chunks to avoid context overflow
+        CHUNK_SIZE = 6000 # Smaller chunks for refinement to keep precision high
+        chunks = self._chunk_text(transcription, max_chars=CHUNK_SIZE)
+        refined_parts = []
+        
+        fallback_system = "Ты — эксперт по исправлению ошибок в тексте."
+        system_text_raw = get_prompt("meeting_refine_transcript", fallback=fallback_system)
+        system_text = system_text_raw.replace("{{context}}", context or "Контекст не предоставлен")
+
+        for i, chunk in enumerate(chunks):
+            logger.info(f"Refining chunk {i+1}/{len(chunks)}...")
+            user_text = f"ОБРАБОТАЙ ЭТУ ЧАСТЬ ТЕКСТА:\n\n{chunk}"
+            messages = [
+                {"role": "system", "content": system_text},
+                {"role": "user", "content": user_text}
+            ]
+            
+            res = await self._call_ollama(messages, temperature=0.1)
+            refined_text = res.get("text", chunk)
+            refined_parts.append(refined_text)
+            
+            if trace:
+                trace.log_generation(
+                    messages, refined_text, self.ollama_model, 
+                    res.get("latency_ms", 0), res.get("input_tokens", 0), res.get("output_tokens", 0), 
+                    f"Refine Transcript Chunk {i+1}/{len(chunks)}"
+                )
+        
+        return "\n".join(refined_parts).strip()
 
     async def _ensure_model_exists(self, client: ollama.Client):
         if self._model_verified:

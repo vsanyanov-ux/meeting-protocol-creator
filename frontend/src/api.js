@@ -15,7 +15,7 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-export const uploadMeeting = async (file, email, provider, existingFileId = null, forceCpu = false, sessionId = null, sendEmail = true) => {
+export const uploadMeeting = async (file, email, provider, existingFileId = null, forceCpu = false, sessionId = null, sendEmail = true, context = null) => {
   const formData = new FormData();
   
   if (file) {
@@ -28,6 +28,7 @@ export const uploadMeeting = async (file, email, provider, existingFileId = null
   if (forceCpu) formData.append('force_cpu', 'true');
   if (sessionId) formData.append('session_id', sessionId);
   formData.append('send_email', sendEmail ? 'true' : 'false');
+  if (context) formData.append('context', context);
 
   const url = `${API_BASE_URL}/process-meeting`;
   const pwd = localStorage.getItem('protocolist_password');

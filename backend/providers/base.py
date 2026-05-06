@@ -20,11 +20,24 @@ class BaseAIProvider(ABC):
         audio_path: str, 
         file_id: str, 
         status_updater: Callable[[str, str], None],
-        trace: Any
+        trace: Any,
+        initial_prompt: Optional[str] = None
     ) -> Optional[str]:
         """
         Transcribe audio file to text.
         Provider is responsible for any chunking or cloud uploads needed.
+        """
+        pass
+
+    @abstractmethod
+    async def refine_transcript(
+        self, 
+        transcription: str, 
+        context: Optional[str] = None,
+        trace: Any = None
+    ) -> str:
+        """
+        Refine/Fix the raw STT transcription using an LLM and context.
         """
         pass
 

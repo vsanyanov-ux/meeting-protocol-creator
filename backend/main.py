@@ -479,7 +479,8 @@ async def process_meeting(
     existing_file_id: str = Form(None),
     force_cpu: bool = Form(False),
     session_id: str = Form(None),
-    should_send_email: bool = Form(True, alias="send_email")
+    should_send_email: bool = Form(True, alias="send_email"),
+    context: str = Form(None)
 ):
     # 0. Check Queue Size (Point 2: VRAM/Queue exhaustion protection)
     active_tasks = status_manager.get_all_active_count()
@@ -534,7 +535,7 @@ async def process_meeting(
     })
 
     metadata = {"file_id": file_id, "original_filename": file.filename if file else file_id}
-    background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu, session_id, should_send_email)
+    background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu, session_id, should_send_email, context)
     return {"status": "processing", "file_id": file_id}
 
 class DummyTrace:
@@ -544,7 +545,7 @@ class DummyTrace:
     def __enter__(self): return self
     def __exit__(self, *args): pass
 
-async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None, recipient_email: str = None, provider_type: str = None, force_cpu: bool = False, session_id: str = None, should_send_email: bool = True):
+async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None, recipient_email: str = None, provider_type: str = None, force_cpu: bool = False, session_id: str = None, should_send_email: bool = True, context: str = None):
     """Orchestrates the full pipeline with a global lock for stability."""
     def emergency_log(msg):
         try:
@@ -588,11 +589,19 @@ async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None
                                 transcription = await current_provider.transcribe_audio(
                                     norm_res["path"], file_id, 
                                     lambda s, m: status_manager.update(file_id, {"status": s, "message": m}), 
-                                    trace
+                                    trace,
+                                    initial_prompt=context
                                 )
                                 trace.end_span("transcription")
                             
                             if not transcription: raise Exception("Transcription failed")
+
+                            # B. Transcript Refinement (Optional but recommended with context)
+                            if context:
+                                status_manager.update(file_id, {"status": "transcribing", "message": "Улучшение текста..."})
+                                trace.start_span("transcript_refinement", as_type="generation")
+                                transcription = await current_provider.refine_transcript(transcription, context, trace)
+                                trace.end_span("transcript_refinement")
 
                             # B. Protocol Generation
                             emergency_log("GENERATION START")

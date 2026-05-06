@@ -65,6 +65,7 @@ const App = () => {
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [healthData, setHealthData] = useState(null);
+  const [meetingContext, setMeetingContext] = useState('');
   const fileInputRef = useRef(null);
 
   const backendFailCount = useRef(0);
@@ -195,7 +196,8 @@ const App = () => {
         isFallback ? fileId : null, 
         forceCpu,
         sessionId,
-        shouldSendEmail
+        shouldSendEmail,
+        meetingContext
       );
       if (!isFallback) setFileId(result.file_id);
       setStatus({ status: 'starting', message: 'Перезапуск с новыми параметрами...' });
@@ -676,6 +678,31 @@ const App = () => {
                     </div>
                   </div>
 
+
+                  <div className="input-field-group" style={{ marginBottom: '1.5rem' }}>
+                    <label style={{ display: 'block', marginBottom: '0.75rem', fontSize: '0.9rem', fontWeight: 500, color: 'var(--text-muted)' }}>
+                      Контекст совещания (участники, тема):
+                    </label>
+                    <textarea 
+                      value={meetingContext}
+                      onChange={(e) => setMeetingContext(e.target.value)}
+                      placeholder="Например: Участники - Василий Иванов, Петр Сидоров. Тема - Обсуждение проекта ЦНИИТМАШ."
+                      className="glass-input"
+                      style={{ 
+                        width: '100%', 
+                        padding: '1rem', 
+                        borderRadius: 12, 
+                        border: '1px solid rgba(255,255,255,0.1)', 
+                        background: 'rgba(255,255,255,0.05)', 
+                        color: 'white', 
+                        minHeight: '80px',
+                        maxHeight: '150px',
+                        resize: 'vertical',
+                        fontSize: '0.9rem',
+                        lineHeight: '1.5'
+                      }}
+                    />
+                  </div>
 
                   <div 
                     className="input-field-group" 

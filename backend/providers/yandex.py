@@ -58,7 +58,8 @@ class YandexProvider(BaseAIProvider):
         audio_path: str, 
         file_id: str, 
         status_updater: Callable[[str, str], None],
-        trace: Any
+        trace: Any,
+        initial_prompt: Optional[str] = None
     ) -> Optional[str]:
         # Get duration for STT pricing (Langfuse)
         duration_sec = await self._get_audio_duration(audio_path)
@@ -223,6 +224,89 @@ class YandexProvider(BaseAIProvider):
                 
         logger.error("Long STT timed out after 1 hour.")
         return None
+
+    async def refine_transcript(self, transcription: str, context: Optional[str] = None, trace: Any = None) -> str:
+        if not context:
+            return transcription
+            
+        logger.info(f"Refining transcript via Yandex GPT (length: {len(transcription)})")
+        
+        # Yandex GPT has a context limit, so we chunk long transcripts
+        CHUNK_SIZE = 8000 
+        chunks = self._chunk_text(transcription, max_chars=CHUNK_SIZE)
+        refined_parts = []
+        
+        fallback_system = "Ты — эксперт по исправлению ошибок в тексте."
+        system_text_raw = get_prompt("meeting_refine_transcript", fallback=fallback_system)
+        system_text = system_text_raw.replace("{{context}}", context or "Контекст не предоставлен")
+        
+        headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
+
+        for i, chunk in enumerate(chunks):
+            logger.info(f"Refining chunk {i+1}/{len(chunks)} via Yandex...")
+            user_text = f"ОБРАБОТАЙ ЭТУ ЧАСТЬ ТЕКСТА:\n\n{chunk}"
+            messages = [
+                {"role": "system", "text": system_text},
+                {"role": "user", "text": user_text}
+            ]
+            
+            prompt = {
+                "modelUri": f"gpt://{self.folder_id}/{self.gpt_model}",
+                "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": "2000"},
+                "messages": messages
+            }
+            
+            t_start = time.time()
+            try:
+                response = await asyncio.to_thread(requests.post, self.gpt_url, headers=headers, json=prompt, timeout=120)
+                if response.status_code == 200:
+                    data = response.json()
+                    refined_text = data["result"]["alternatives"][0]["message"]["text"]
+                    refined_parts.append(refined_text)
+                    
+                    if trace:
+                        usage = data["result"].get("usage", {})
+                        trace.log_generation(
+                            messages, refined_text, self.gpt_model, 
+                            int((time.time() - t_start) * 1000), 
+                            int(usage.get("inputTextTokens", 0)), 
+                            int(usage.get("completionTokens", 0)), 
+                            f"Yandex Refine Chunk {i+1}/{len(chunks)}"
+                        )
+                else:
+                    logger.error(f"Yandex Refine Error: {response.text}")
+                    refined_parts.append(chunk)
+            except Exception as e:
+                logger.error(f"Yandex Refine Exception: {e}")
+                refined_parts.append(chunk)
+        
+        return "\n".join(refined_parts).strip()
+
+    def _chunk_text(self, text: str, max_chars: int = 8000) -> List[str]:
+        if len(text) <= max_chars:
+            return [text]
+        chunks = []
+        lines = text.splitlines(keepends=True)
+        current_chunk = []
+        current_length = 0
+        for line in lines:
+            if len(line) > max_chars:
+                if current_chunk:
+                    chunks.append("".join(current_chunk))
+                    current_chunk = []
+                    current_length = 0
+                for j in range(0, len(line), max_chars):
+                    chunks.append(line[j : j + max_chars])
+                continue
+            if current_length + len(line) > max_chars and current_chunk:
+                chunks.append("".join(current_chunk))
+                current_chunk = []
+                current_length = 0
+            current_chunk.append(line)
+            current_length += len(line)
+        if current_chunk:
+            chunks.append("".join(current_chunk))
+        return chunks
 
     async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None, trace: Any = None) -> Dict[str, Any]:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
