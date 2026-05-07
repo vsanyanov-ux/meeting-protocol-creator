@@ -142,7 +142,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Протоколист API",
-    version="5.3.0",
+    version="5.5.0",
     lifespan=lifespan
 )
 
@@ -419,12 +419,12 @@ async def get_history(limit: int = 50):
 
 @app.get("/info")
 async def get_info():
-
     location_raw = os.getenv("BACKEND_LOCATION", "local").lower()
     return {
         "location": "Локально" if location_raw == "local" else "Онлайн",
         "default_provider": ai_provider.name,
-        "is_online": location_raw == "online"
+        "is_online": location_raw == "online",
+        "version": app.version
     }
 
 @app.get("/")

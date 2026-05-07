@@ -52,7 +52,7 @@ const App = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [recipientEmail, setRecipientEmail] = useState('v.s.anyanov@gmail.com');
-  const [systemInfo, setSystemInfo] = useState({ location: 'Загрузка...', default_provider: 'yandex', provider_name: 'Яндекс Cloud', is_online: false });
+  const [systemInfo, setSystemInfo] = useState({ location: 'Загрузка...', default_provider: 'yandex', provider_name: 'Яндекс Cloud', is_online: false, version: '5.5.0' });
   const [selectedProvider, setSelectedProvider] = useState('local');
   const [isBackendOnline, setIsBackendOnline] = useState(false);
   const [sessionId, setSessionId] = useState(null);
@@ -362,9 +362,9 @@ const App = () => {
               </button>
             </form>
             
-            <div style={{ marginTop: '2rem', textAlign: 'center', fontSize: '0.75rem', color: 'rgba(255,255,255,0.3)' }}>
-              Protocolist v5.2.0 • Система защищена
-            </div>
+              <div style={{ marginTop: '2rem', textAlign: 'center', fontSize: '0.75rem', color: 'rgba(255,255,255,0.3)' }}>
+                Protocolist v{systemInfo.version || '5.5.0'} • Система защищена
+              </div>
           </motion.div>
         </div>
       </>
@@ -970,7 +970,7 @@ const App = () => {
             gap: '1rem'
           }}>
             <div style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.3)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span>Protocolist v5.2.0</span>
+              <span>Protocolist v{systemInfo.version || '5.4.0'}</span>
               {healthData?.tasks_in_queue > 0 && (
                 <span style={{ 
                   background: 'rgba(59, 130, 246, 0.1)', 

@@ -86,7 +86,8 @@ def normalize_file(filepath: str, file_id: str) -> Dict[str, Any]:
             out_path = os.path.join(os.path.dirname(filepath), f"normalized_{file_id}.ogg")
             result = subprocess.run([
                 "ffmpeg", "-y", "-i", filepath,
-                "-c:a", "libopus", "-b:a", "24k", "-ac", "1", "-ar", "16000",
+                "-af", "highpass=f=200,lowpass=f=3500,speechnorm=e=10:r=0.0001:l=1,dynaudnorm=f=200:g=25:m=100",
+                "-c:a", "libopus", "-b:a", "32k", "-ac", "1", "-ar", "16000",
                 "-vn", 
                 out_path
             ], capture_output=True, text=True, timeout=300)

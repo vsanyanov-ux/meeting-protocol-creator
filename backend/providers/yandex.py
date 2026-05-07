@@ -282,7 +282,7 @@ class YandexProvider(BaseAIProvider):
         
         return "\n".join(refined_parts).strip()
 
-    def _chunk_text(self, text: str, max_chars: int = 8000) -> List[str]:
+    def _chunk_text(self, text: str, max_chars: int = 15000) -> List[str]:
         if len(text) <= max_chars:
             return [text]
         chunks = []
@@ -308,15 +308,80 @@ class YandexProvider(BaseAIProvider):
             chunks.append("".join(current_chunk))
         return chunks
 
-    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None, trace: Any = None, context: Optional[str] = None) -> Dict[str, Any]:
+    async def _summarize_chunk(self, chunk: str, index: int, total: int, trace: Any = None, context: Optional[str] = None) -> str:
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
+        fallback_system = f"Ты — профессиональный секретарь. Выдели главное из части {index} (из {total})."
+        system_text = get_prompt("meeting_summarize_chunk", fallback=fallback_system)
+        
+        if "{{" in system_text:
+            system_text = system_text.replace("{{index}}", str(index)).replace("{{total}}", str(total))
+
+        user_prompt = get_prompt("meeting_summarize_chunk_user", fallback="ВЫДЕЛИ ГЛАВНОЕ:\n\n{{chunk}}")
+        user_text = user_prompt.replace("{{chunk}}", chunk)
+        
+        if context:
+            user_text = f"КОНТЕКСТ СОВЕЩАНИЯ (участники, тема):\n{context}\n\n{user_text}"
+
+        messages = [{"role": "system", "text": system_text}, {"role": "user", "text": user_text}]
+        prompt = {
+            "modelUri": f"gpt://{self.folder_id}/{self.gpt_model}",
+            "completionOptions": {"stream": False, "temperature": 0.1, "maxTokens": "2000"},
+            "messages": messages
+        }
+        
+        try:
+            response = await asyncio.to_thread(requests.post, self.gpt_url, headers=headers, json=prompt, timeout=120)
+            if response.status_code == 200:
+                data = response.json()
+                summary = data["result"]["alternatives"][0]["message"]["text"]
+                if trace:
+                    usage = data["result"].get("usage", {})
+                    trace.log_generation(messages, summary, self.gpt_model, 0, int(usage.get("inputTextTokens", 0)), int(usage.get("completionTokens", 0)), f"Yandex Summarize Chunk {index}/{total}")
+                return summary
+        except Exception as e:
+            logger.error(f"Yandex Summarize Error: {e}")
+        return "Ошибка обработки части."
+
+    async def _summarize_for_audit(self, transcription: str, context: Optional[str] = None, trace: Any = None) -> str:
+        logger.info(f"Summarizing long transcript for audit (length: {len(transcription)})")
+        chunks = self._chunk_text(transcription, max_chars=12000)
+        summaries = []
+        for i, chunk in enumerate(chunks):
+            summary = await self._summarize_chunk(chunk, i+1, len(chunks), trace, context)
+            summaries.append(summary)
+        return "\n\n=== ЧАСТЬ ТЕЗИСОВ ===\n".join(summaries)
+
+    async def create_protocol(self, transcription: str, status_updater: Optional[Callable[[str, str], None]] = None, file_id: Optional[str] = None, trace: Any = None, context: Optional[str] = None) -> Dict[str, Any]:
+        CHUNK_THRESHOLD = 20000
+        if len(transcription) > CHUNK_THRESHOLD:
+            logger.info(f"LONG TRANSCRIPT DETECTED (Yandex). Using chunked processing...")
+            chunks = self._chunk_text(transcription, max_chars=CHUNK_THRESHOLD)
+            partial_summaries = []
+            for i, chunk in enumerate(chunks):
+                if status_updater:
+                    status_updater("summarizing", f"Анализ части {i+1} из {len(chunks)}...")
+                summary_part = await self._summarize_chunk(chunk, i+1, len(chunks), trace=trace, context=context)
+                partial_summaries.append(summary_part)
+            
+            combined_context = "\n\n=== ЧАСТЬ ПРОТОКОЛА ===\n".join(partial_summaries)
+            if status_updater:
+                status_updater("summarizing", "Формирование финального протокола...")
+            return await self._create_protocol_single(combined_context, is_consolidated=True, trace=trace, context=context)
+        else:
+            return await self._create_protocol_single(transcription, trace=trace, context=context)
+
+    async def _create_protocol_single(self, text: str, is_consolidated: bool = False, trace: Any = None, context: Optional[str] = None) -> Dict[str, Any]:
+        headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
+        prompt_prefix = "составь подробный протокол" if not is_consolidated else "составь ФИНАЛЬНЫЙ СВОДНЫЙ протокол"
+        source_type = "расшифровки" if not is_consolidated else "тезисов"
+        
         fallback_system = "Ты — профессиональный секретарь. Составь протокол совещания на русском языке. ЗАПРЕЩЕНО выдумывать сроки (дедлайны) — если они не озвучены, пиши 'Не указан'."
         system_text = get_prompt("meeting_create_protocol", fallback=fallback_system)
         
         user_prompt = get_prompt("meeting_create_protocol_user", fallback="Составь протокол на основе текста:\n\n{{text}}")
-        user_text = user_prompt.replace("{{text}}", transcription)\
-                               .replace("{{source_type}}", "расшифровку")\
-                               .replace("{{action_type}}", "составь подробный протокол")
+        user_text = user_prompt.replace("{{text}}", text)\
+                               .replace("{{source_type}}", source_type)\
+                               .replace("{{action_type}}", prompt_prefix)
 
         if context:
             user_text = f"КОНТЕКСТ СОВЕЩАНИЯ (участники, тема):\n{context}\n\n{user_text}"
@@ -384,7 +449,10 @@ class YandexProvider(BaseAIProvider):
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
         fallback_system = "Ты — корпоративный аудитор. Сравни расшифровку и протокол. Выдай отчет на русском. Особое внимание удели галлюцинациям в сроках исполнения."
         system_text = get_prompt("meeting_verify_protocol", fallback=fallback_system)
-        
+
+        if len(transcription) > 20000:
+            transcription = await self._summarize_for_audit(transcription, context, trace)
+
         user_prompt = get_prompt("meeting_verify_protocol_user", fallback="РАСШИФРОВКА:\n{{transcription}}\n\nПРОТОКОЛ:\n{{protocol}}")
         user_text = user_prompt.replace("{{transcription}}", transcription).replace("{{protocol}}", protocol)
         

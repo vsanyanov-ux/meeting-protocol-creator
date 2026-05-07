@@ -17,7 +17,9 @@ PROMPTS_TO_UPLOAD = [
     "meeting_verify_protocol_user",
     "meeting_summarize_chunk",
     "meeting_summarize_chunk_user",
-    "meeting_refine_transcript"
+    "meeting_refine_transcript",
+    "meeting_humanize_speakers",
+    "meeting_humanize_speakers_user"
 ]
 
 def upload_prompts():
