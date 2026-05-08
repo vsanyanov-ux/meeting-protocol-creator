@@ -267,13 +267,14 @@ class StatusManager:
     def __init__(self):
         if not os.path.exists(STORAGE_DIR):
             os.makedirs(STORAGE_DIR)
-        self.db_path = os.path.join(STORAGE_DIR, "status.db")
+        # Use /tmp for SQLite to avoid I/O errors on Windows Docker volumes
+        self.db_path = '/tmp/tasks.db'
         self._init_db()
 
     def _init_db(self):
         with sqlite3.connect(self.db_path) as conn:
             # Enable WAL mode for concurrent read/write (Point 5)
-            conn.execute("PRAGMA journal_mode=WAL")
+            #conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA busy_timeout = 30000") # 30s timeout
             conn.execute("""

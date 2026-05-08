@@ -45,11 +45,12 @@ def send_email(recipient_email: str, subject: str, body: str, attachment_path: s
     msg.set_content(body)
 
     # Simplified HTML version
+    body_html = body.replace('\n', '<br>')
     html_body = f"""
     <html>
         <body style="font-family: sans-serif;">
             <h2>Ваш протокол готов</h2>
-            <p>{body.replace('\n', '<br>')}</p>
+            <p>{body_html}</p>
             <hr>
             <p style="color: #666; font-size: 0.8em;">Отправлено автоматически сервисом Протоколист.</p>
         </body>

@@ -23,6 +23,7 @@ backend/uploads/
 backend/temp_protocols/
 uploads/
 temp_protocols/
+images/
 *.docx
 *.aac
 *.mp3
