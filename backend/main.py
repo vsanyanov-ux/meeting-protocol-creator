@@ -24,6 +24,8 @@ from loguru import logger
 from typing import Optional, List, Dict, Any, Callable, Union
 import traceback
 from datetime import datetime
+import hashlib
+import hashlib
 
 # Import our custom modules
 from providers.base import BaseAIProvider
@@ -142,7 +144,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Протоколист API",
-    version="5.5.0",
+    version="5.6.0",
     lifespan=lifespan
 )
 
@@ -178,30 +180,44 @@ app.add_middleware(
 )
 
 # --- Security: Simple App Password (Point 1) ---
-@app.middleware("http")
-async def check_app_password(request: Request, call_next):
-    # Skip check if password is not configured
+def verify_app_password(provided_password: str) -> bool:
+    """Verifies provided password against SHA-256 hash or plain text in .env."""
+    if not provided_password:
+        return False
+        
+    stored_hash = os.getenv("APP_PASSWORD_HASH")
+    if stored_hash:
+        # Check against SHA-256 hash
+        provided_hash = hashlib.sha256(provided_password.encode()).hexdigest()
+        return provided_hash == stored_hash
+    
+    # Fallback to plain text APP_PASSWORD for legacy support
     app_pwd = os.getenv("APP_PASSWORD")
     if not app_pwd:
-        return await call_next(request)
-    
+        return True # Access granted if no password configured
+    return provided_password == app_pwd
+
+@app.middleware("http")
+async def check_app_password(request: Request, call_next):
     # Paths to exclude from password check
     public_paths = ["/", "/health", "/info", "/docs", "/openapi.json", "/favicon.ico"]
     if request.url.path in public_paths:
         return await call_next(request)
     
-    # Check for password in header
-    provided_pwd = request.headers.get("X-App-Password")
-    if provided_pwd != app_pwd:
-        # Also check query param as fallback for direct downloads if needed
-        provided_pwd_query = request.query_params.get("password")
-        if provided_pwd_query != app_pwd:
-            logger.warning(f"Unauthorized access attempt to {request.url.path} from {request.client.host}")
-            return Response(
-                content=json.dumps({"detail": "Несанкционированный доступ. Требуется пароль."}, ensure_ascii=False),
-                status_code=401,
-                media_type="application/json"
-            )
+    # Skip check if no password is configured at all
+    if not os.getenv("APP_PASSWORD_HASH") and not os.getenv("APP_PASSWORD"):
+        return await call_next(request)
+    
+    # Check for password in header or query param
+    provided_pwd = request.headers.get("X-App-Password") or request.query_params.get("password")
+    
+    if not verify_app_password(provided_pwd):
+        logger.warning(f"Unauthorized access attempt to {request.url.path} from {request.client.host}")
+        return Response(
+            content=json.dumps({"detail": "Несанкционированный доступ. Требуется правильный пароль."}, ensure_ascii=False),
+            status_code=401,
+            media_type="application/json"
+        )
     
     return await call_next(request)
 
@@ -267,8 +283,8 @@ class StatusManager:
     def __init__(self):
         if not os.path.exists(STORAGE_DIR):
             os.makedirs(STORAGE_DIR)
-        # Use /tmp for SQLite to avoid I/O errors on Windows Docker volumes
-        self.db_path = '/tmp/tasks.db'
+        # Use storage/ for SQLite to ensure persistence across container restarts
+        self.db_path = os.path.join(STORAGE_DIR, 'status.db')
         self._init_db()
 
     def _init_db(self):

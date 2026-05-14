@@ -1,7 +1,7 @@
-# Протоколист v5.5.0 🚀📝🧠
+# Протоколист v5.6.0 🚀📝🧠
 
 Автоматизированная система создания профессиональных протоколов совещаний из текста, видео- и аудиозаписей с использованием ИИ. 
-**Версия 5.5.0 (Quiet Voices & Clean Protocol Update)**
+**Версия 5.6.0 (Portable & CPU Compatibility Update)**
 
 ---
 
@@ -9,37 +9,57 @@
 
 ```mermaid
 graph TD
-    User["👤 Пользователь"] -->|Browser| Proxy["🌐 Nginx Proxy (Port 90)"]
-    Proxy -->|Static Assets| Frontend["⚛️ Frontend: React"]
-    Proxy -->|"API Proxy /api"| Backend["🐍 Backend: FastAPI"]
-    
-    subgraph "Backend Layer (Docker)"
-        Backend -->|Normalization| FFmpeg["🎵 FFmpeg"]
+    subgraph Client_Zone ["🌐 Входная точка"]
+        User["👤 Пользователь"] -->|"HTTPS (Port 90)"| Proxy["🌐 Nginx Proxy"]
+        Proxy -->|"UI"| React["⚛️ Frontend"]
+        Proxy -->|"API"| FastAPI["🐍 FastAPI (v5.6.0)"]
+    end
+
+    subgraph Security_Layer ["🛡️ Контур Безопасности"]
+        FastAPI -->|"Auth"| PWD["🔐 App Password Check"]
+        PWD -->|"Quota"| DiskLimit["💾 Disk Space Check"]
+    end
+
+    subgraph Processing_Engine ["⚙️ Движок Обработки"]
+        DiskLimit -->|"Pre-process"| FFmpeg["🎵 FFmpeg (Normalization)"]
         
         FFmpeg --> AI_Router{"🤖 AI Provider Router"}
         
-        AI_Router -->|Local| Local_AI[/"🏠 Local AI: Ollama + Whisper"/]
-        AI_Router -->|Cloud| Cloud_AI[/"☁️ Cloud AI: Yandex SpeechKit/GPT"/]
+        %% Локальный путь
+        AI_Router -->|"LOCAL (Primary)"| Lock{{"🔒 GPU Resource Lock"}}
+        subgraph Local_Stack ["🏠 Закрытый контур (GPU)"]
+            Lock --> Whisper["🎙️ Whisper Turbo"]
+            Whisper --> Ollama["🧠 Ollama (Qwen)"]
+        end
         
-        Local_AI -->|Hardware Failure| Fallback_CPU[/"🐢 CPU Fallback"/]
-        Fallback_CPU -->|Resource Error| Cloud_AI
-        
-        Local_AI --> Docx["📄 Document Generation (Word)"]
-        Cloud_AI --> Docx
-        Fallback_CPU --> Docx
+        %% Облачный путь
+        AI_Router -.->|"CLOUD (Fallback)"| Yandex["☁️ Yandex SpeechKit/GPT"]
     end
-    
-    Docx -->|SMTP| Email["📧 Email Service"]
-    Docx -->|Storage| Disk["💾 /temp_protocols"]
-    
-    Email --> Done["🏁 Готовый протокол"]
-    Disk --> Done
+
+    subgraph Output_Storage ["📄 Выдача и Хранение"]
+        Local_Stack --> Docx["📄 DOCX Generator (GOST)"]
+        Yandex --> Docx
+        
+        Docx --> History["🗄️ SQLite History (WAL)"]
+        Docx --> Email["📧 SMTP Delivery"]
+        
+        History -.->|"24h"| Cleaner["🧹 Auto-Cleanup"]
+    end
+
+    %% Стили
+    style AI_Router fill:#fff9c4,stroke:#fbc02d
+    style Local_Stack fill:#e1f5fe,stroke:#01579b
+    style Yandex fill:#fff,stroke:#ff5722,stroke-dasharray: 5 5
+    style Lock fill:#ffccbc,stroke:#e64a19
 ```
 
 ---
 
-## ✨ Ключевые особенности v5.5.0 (Audio & UX Excellence)
-- **🔊 Extreme Sensitivity:** Распознавание даже самого тихого шепота благодаря двойной нормализации и фильтрам частот.
+## ✨ Ключевые особенности v5.6.0 (Portability & Hybrid Power)
++- **🚀 Портативность:** Полноценная поддержка переноса системы на другие машины через Docker-архивы (`save/load`).
++- **💻 Ноутбук-режим:** Возможность работы на устройствах без GPU NVIDIA через `docker-compose.cpu.yml`.
++- **📦 Автономность:** Готовые скрипты для упаковки (`PREPARE_FOR_CLIENT.bat`) и быстрого старта на новом месте.
+ - **🔊 Extreme Sensitivity:** Распознавание даже самого тихого шепота благодаря двойной нормализации и фильтрам частот.
 - **🧹 Чистые протоколы:** Удаление технического мусора (процентов уверенности) из итоговых документов.
 - **🧠 Контекстное управление:** Поля ввода участников и тем встречи для повышения точности транскрибации.
 - **✨ Transcript Refinement:** Интеллектуальное исправление опечаток и ошибок распознавания на основе контекста.

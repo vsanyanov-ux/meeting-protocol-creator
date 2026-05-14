@@ -9,8 +9,8 @@ echo ==========================================
 
 :: 1. Force kill existing processes to free ports
 echo [1/3] Cleaning up processes...
-taskkill /F /IM python* /T 2>nul
-taskkill /F /IM node* /T 2>nul
+taskkill /F /FI "IMAGENAME eq python*" /T 2>nul
+taskkill /F /FI "IMAGENAME eq node*" /T 2>nul
 timeout /t 2 >nul
 
 :: 2. Start Backend

@@ -16,6 +16,8 @@ def get_langfuse_client():
             public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
             secret_key = os.getenv("LANGFUSE_SECRET_KEY")
             host = os.getenv("LANGFUSE_HOST") or os.getenv("LANGFUSE_BASE_URL") or "https://cloud.langfuse.com"
+            # Default to anonymize=True for maximum security in Enterprise environments
+            anonymize_flag = os.getenv("LANGFUSE_ANONYMIZE", "true").lower() == "true"
             
             if public_key and secret_key:
                 _langfuse = Langfuse(
@@ -23,6 +25,7 @@ def get_langfuse_client():
                     secret_key=secret_key,
                     host=host
                 )
+                _langfuse.anonymize = anonymize_flag
                 logger.info(f"Langfuse initialized successfully (Host: {host})")
             else:
                 logger.warning("Langfuse credentials missing in .env")
@@ -39,30 +42,33 @@ class PipelineTrace:
         self.metadata = metadata or {}
         self.trace_name = trace_name
         
+        # Determine if we should anonymize based on client settings
         self.client = get_langfuse_client()
+        self.anonymize = os.getenv("LANGFUSE_ANONYMIZE", "true").lower() == "true"
+        
         self.trace_obs = None
         self.current_spans = {}
         
     def __enter__(self):
         if self.client:
             try:
-                # In SDK 3.x, start_span doesn't take id/session_id directly.
-                # We use trace_context for trace_id and update_trace for other fields.
-                self.trace_obs = self.client.start_span(
-                    name=self.trace_name,
-                    trace_context={"trace_id": self.trace_id}
-                )
-                
-                # Set session_id and metadata via update_trace
-                self.trace_obs.update_trace(
+                import langfuse
+                # In SDK v4, session_id and global metadata are set via propagate_attributes
+                self._attr_ctx = langfuse.propagate_attributes(
                     session_id=self.session_id,
-                    metadata={
-                        **self.metadata,
-                        "provider": self.provider,
-                        "filename": self.filename
-                    }
+                    metadata=self.metadata
                 )
-                logger.info(f"Started Langfuse trace: {self.trace_id} (Session: {self.session_id})")
+                self._attr_ctx.__enter__()
+
+                # To set a custom trace ID, we must use trace_context.
+                self.trace_obs_ctx = self.client.start_as_current_observation(
+                    name=self.trace_name,
+                    trace_context={"trace_id": self.trace_id},
+                    input={"filename": self.filename, "provider": self.provider}
+                )
+                self.trace_obs = self.trace_obs_ctx.__enter__()
+                
+                logger.info(f"Started Langfuse v4 trace: {self.trace_id} (Session: {self.session_id})")
             except Exception as e:
                 logger.error(f"Failed to start trace: {e}")
         return self
@@ -70,13 +76,14 @@ class PipelineTrace:
     def start_span(self, name, as_type="span", metadata=None):
         if not self.client or not self.trace_obs: return None
         try:
-            # Using start_observation as standard in v3
-            span = self.trace_obs.start_observation(
+            # In v4, we use start_as_current_observation to support context manager protocol
+            span_ctx = self.trace_obs.start_as_current_observation(
                 name=name,
                 as_type=as_type,
                 metadata=metadata or {}
             )
-            self.current_spans[name] = span
+            span = span_ctx.__enter__()
+            self.current_spans[name] = (span_ctx, span)
             return span
         except Exception as e:
             logger.error(f"Failed to start {as_type} {name}: {e}")
@@ -85,13 +92,13 @@ class PipelineTrace:
     def end_span(self, name, metadata=None, level="INFO"):
         if name in self.current_spans:
             try:
-                span = self.current_spans[name]
+                span_ctx, span = self.current_spans[name]
                 if metadata:
                     try:
                         span.update(metadata=metadata, level=level)
                     except:
                         pass
-                span.end()
+                span_ctx.__exit__(None, None, None)
                 del self.current_spans[name]
             except Exception as e:
                 logger.error(f"Failed to end span {name}: {e}")
@@ -101,49 +108,55 @@ class PipelineTrace:
             self.end_span(span_name, metadata={"error": error_msg}, level="ERROR")
         elif self.trace_obs:
             try:
-                self.trace_obs.update_trace(status_message=error_msg)
+                self.trace_obs.update(status_message=error_msg)
             except:
                 pass
 
     def log_generation(self, input_messages, output_text, model, latency_ms=None, input_tokens=None, output_tokens=None, name="Generation"):
         if not self.trace_obs: return
         try:
-            # SDK 3.x uses usage_details (Dict[str, int])
             usage_data = {
                 "input": int(input_tokens or 0),
                 "output": int(output_tokens or 0),
                 "total": int((input_tokens or 0) + (output_tokens or 0))
             }
             
-            logger.info(f"Logging generation to Langfuse: {name} (Model: {model}, Tokens: {usage_data['total']})")
+            logger.info(f"Logging generation to Langfuse: {name} (Model: {model}, Tokens: {usage_data['total']}, Anonymized: {self.anonymize})")
             
-            # SDK v3 style: start_observation and update for usage
-            gen = self.trace_obs.start_observation(
+            # Redact text if anonymization is active
+            if self.anonymize:
+                input_data = "[DATA REDACTED FOR SECURITY]"
+                output_data = "[DATA REDACTED FOR SECURITY]"
+            else:
+                input_data = input_messages
+                output_data = output_text
+
+            # SDK v4 style: .start_as_current_observation as generation
+            with self.trace_obs.start_as_current_observation(
                 name=name,
                 as_type="generation",
                 model=model,
-                input=input_messages,
-                output=output_text
-            )
-            # Use usage_details instead of usage
-            gen.update(usage_details=usage_data)
-            gen.end()
+                input=input_data,
+                metadata={"tokens": usage_data}
+            ) as gen:
+                gen.update(output=output_data, usage_details=usage_data)
         except Exception as e:
             logger.error(f"Failed to log generation: {e}")
 
     def log_stt(self, duration_sec, model="whisper"):
         if not self.trace_obs: return
         try:
-            gen = self.trace_obs.start_observation(
+            # Use generation for STT as well
+            with self.trace_obs.start_as_current_observation(
                 name="Speech-to-Text",
                 as_type="generation",
-                model=model
-            )
-            # usage_details for STT (usually just input)
-            gen.update(usage_details={
-                "input": int(duration_sec)
-            }, metadata={"unit": "SECONDS"})
-            gen.end()
+                model=model,
+                usage_details={
+                    "input": int(duration_sec)
+                },
+                metadata={"unit": "SECONDS"}
+            ) as gen:
+                pass
         except Exception as e:
             logger.error(f"Failed to log STT: {e}")
 
@@ -165,14 +178,21 @@ class PipelineTrace:
                     self.end_span(span_name)
                 
                 try:
-                    self.trace_obs.update(status_message=status)
+                    # In v4, we use .update() on the trace
+                    if self.trace_obs:
+                        self.trace_obs.update(status_message=status)
+                    
+                    # Exit the context managers in reverse order
+                    if hasattr(self, "trace_obs_ctx") and self.trace_obs_ctx:
+                        self.trace_obs_ctx.__exit__(None, None, None)
+                    if hasattr(self, "_attr_ctx") and self._attr_ctx:
+                        self._attr_ctx.__exit__(None, None, None)
                 except:
                     pass
-                self.trace_obs.end()
                 
                 if self.client:
                     self.client.flush()
-                logger.info(f"Langfuse Trace Finished: {self.trace_id}")
+                logger.info(f"Langfuse Trace Finished and Flushed: {self.trace_id}")
             except Exception as e:
                 logger.error(f"Failed to finish trace: {e}")
 

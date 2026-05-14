@@ -209,7 +209,7 @@ class LocalProvider(BaseAIProvider):
                 total_conf += conf
                 
                 timestamp = f"[{int(start_time // 60):02d}:{int(start_time % 60):02d}]"
-                full_text.append(f"{timestamp} (Conf: {conf}%) {text.strip()}")
+                full_text.append(f"{timestamp} {text.strip()}")
                 
                 if i % 10 == 0 and i > 0:
                     status_updater("transcribing", f"Обработано {i} фрагментов речи...")
