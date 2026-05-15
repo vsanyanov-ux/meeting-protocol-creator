@@ -144,7 +144,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Протоколист API",
-    version="5.6.0",
+    version="5.6.1",
     lifespan=lifespan
 )
 
@@ -200,7 +200,7 @@ def verify_app_password(provided_password: str) -> bool:
 @app.middleware("http")
 async def check_app_password(request: Request, call_next):
     # Paths to exclude from password check
-    public_paths = ["/", "/health", "/info", "/docs", "/openapi.json", "/favicon.ico"]
+    public_paths = ["/", "/health", "/favicon.ico"]
     if request.url.path in public_paths:
         return await call_next(request)
     
