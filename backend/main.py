@@ -144,7 +144,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Протоколист API",
-    version="5.6.1",
+    version="5.7.0",
     lifespan=lifespan
 )
 
@@ -499,6 +499,14 @@ async def process_meeting(
     should_send_email: bool = Form(True, alias="send_email"),
     context: str = Form(None)
 ):
+    # 0. Check Demo Expiration
+    DEMO_EXPIRES_AT = datetime(2026, 7, 1)
+    if datetime.now() > DEMO_EXPIRES_AT:
+        raise HTTPException(
+            status_code=403, 
+            detail="Демо-период завершен. Пожалуйста, обратитесь к разработчику для приобретения лицензии."
+        )
+
     # 0. Check Queue Size (Point 2: VRAM/Queue exhaustion protection)
     active_tasks = status_manager.get_all_active_count()
     if active_tasks >= MAX_QUEUE_SIZE:
