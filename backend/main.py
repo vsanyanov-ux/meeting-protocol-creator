@@ -250,9 +250,10 @@ def get_provider(provider_type: Optional[str] = None, device: Optional[str] = No
 
 ai_provider = get_provider()
 
-UPLOAD_DIR = "uploads"
-PROTOCOLS_DIR = "temp_protocols"
-STORAGE_DIR = "storage"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+PROTOCOLS_DIR = os.path.join(BASE_DIR, "temp_protocols")
+STORAGE_DIR = os.path.join(BASE_DIR, "storage")
 for d in [UPLOAD_DIR, PROTOCOLS_DIR, STORAGE_DIR]:
     if not os.path.exists(d):
         os.makedirs(d)

@@ -149,6 +149,11 @@ const App = () => {
           }
         } catch (err) {
           console.error("Polling error:", err);
+          if (err.response && err.response.status === 404) {
+            setStatus({ status: 'error', message: 'Задача не найдена или сервер был перезапущен.' });
+            clearInterval(interval);
+            setLoading(false);
+          }
           // Don't stop polling on momentary network errors
         }
       }, 3000);

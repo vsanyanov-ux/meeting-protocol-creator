@@ -12,7 +12,7 @@ services:
       - ./backend/logs:/app/logs
       - ./backend/temp_protocols:/app/temp_protocols
       - ./backend/models_cache:/app/models_cache
-      - ./backend/storage:/app/storage
+      - mpc-storage:/app/storage
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: always
@@ -77,3 +77,6 @@ services:
 networks:
   mpc-network:
     driver: bridge
+
+volumes:
+  mpc-storage:

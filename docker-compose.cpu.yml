@@ -19,13 +19,7 @@ services:
       - ollama
     networks:
       - mpc-network
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: default
-              count: 0
-              capabilities: []
+
     logging:
       driver: "json-file"
       options:
@@ -44,13 +38,7 @@ services:
       mpc-network:
         aliases:
           - ollama
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: default
-              count: 0
-              capabilities: []
+
     logging:
       driver: "json-file"
       options:
