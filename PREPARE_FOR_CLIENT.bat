@@ -1,4 +1,6 @@
 @echo off
+echo Generating VERSION file from Git...
+git describe --tags --always > backend\VERSION
 echo Packing EVERYTHING for maximum autonomy... This will take 10-15 minutes.
 docker save meetingprotocolcreator-backend:latest -o images/backend.tar
 echo Backend done...

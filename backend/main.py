@@ -142,9 +142,34 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Shutting down Протоколист API")
 
+def get_app_version():
+    try:
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        # Пытаемся прочитать файл VERSION (для оффлайн продакшена)
+        version_file = os.path.join(current_dir, "VERSION")
+        if os.path.exists(version_file):
+            with open(version_file, "r", encoding="utf-8") as f:
+                ver = f.read().strip()
+                if ver: return ver
+                
+        # Если файла нет, пытаемся достать версию через Git (для разработки)
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--always"], 
+            cwd=os.path.dirname(current_dir),
+            capture_output=True, text=True, check=True
+        )
+        ver = result.stdout.strip()
+        if ver: return ver
+    except Exception:
+        pass
+    # Фолбэк на случай ошибок
+    return "5.7.1"
+
+app_version = get_app_version()
+
 app = FastAPI(
     title="Протоколист API",
-    version="5.7.0",
+    version=app_version,
     lifespan=lifespan
 )
 
