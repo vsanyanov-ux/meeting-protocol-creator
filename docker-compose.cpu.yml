@@ -6,6 +6,8 @@ services:
       - "8000:8000"
     env_file:
       - ./backend/.env
+    environment:
+      - OLLAMA_URL=http://ollama:11434
     volumes:
       - ./backend/uploads:/app/uploads
       - ./backend/logs:/app/logs
