@@ -463,6 +463,8 @@ class LocalProvider(BaseAIProvider):
         return "\n\n=== ЧАСТЬ ТЕЗИСОВ ===\n".join(summaries)
 
     async def verify_protocol(self, transcription: str, protocol: str, trace: Any = None, context: Optional[str] = None) -> Dict[str, Any]:
+        transcription = transcription or ""
+        protocol = protocol or ""
         if self.device == "cuda":
             await self._cleanup_memory()
             

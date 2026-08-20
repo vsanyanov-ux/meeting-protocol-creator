@@ -9,6 +9,8 @@ os.environ["YANDEX_API_KEY"] = "test-api-key"
 os.environ["YANDEX_FOLDER_ID"] = "test-folder-id"
 os.environ["ALLOWED_ORIGINS"] = "*"
 os.environ["AI_PROVIDER"] = "yandex"
+os.environ.pop("APP_PASSWORD", None)
+os.environ.pop("APP_PASSWORD_HASH", None)
 
 from main import app
 
@@ -59,7 +61,11 @@ def mock_external_services(request):
 @pytest.fixture
 def client():
     """FastAPI TestClient fixture."""
-    with TestClient(app) as c:
+    auth_headers = {}
+    app_pwd = os.getenv("APP_PASSWORD", "protocolist2026")
+    if app_pwd:
+        auth_headers["X-App-Password"] = app_pwd
+    with TestClient(app, headers=auth_headers) as c:
         yield c
 
 @pytest.fixture(autouse=True)

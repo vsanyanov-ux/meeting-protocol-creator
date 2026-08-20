@@ -185,15 +185,6 @@ def generate_docx(content: str) -> str:
     if table_data:
         finalize_table(doc, table_data)
 
-    # --- DEMO WATERMARK ---
-    doc.add_paragraph()
-    watermark_p = doc.add_paragraph()
-    watermark_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run_wm = watermark_p.add_run("Документ сформирован в ознакомительной версии системы «Протоколист». Для перехода на корпоративную лицензию обратитесь к разработчику.")
-    run_wm.italic = True
-    run_wm.font.size = Pt(9)
-    run_wm.font.color.rgb = RGBColor(150, 150, 150)
-    # ----------------------
             
     # Save directory
     temp_dir = "temp_protocols"

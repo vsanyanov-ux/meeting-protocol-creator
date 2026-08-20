@@ -446,6 +446,8 @@ class YandexProvider(BaseAIProvider):
         return result
 
     async def verify_protocol(self, transcription: str, protocol: str, trace: Any = None, context: Optional[str] = None) -> Dict[str, Any]:
+        transcription = transcription or ""
+        protocol = protocol or ""
         headers = {"Authorization": f"Api-Key {self.api_key}", "Content-Type": "application/json"}
         fallback_system = "Ты — корпоративный аудитор. Сравни расшифровку и протокол. Выдай отчет на русском. Особое внимание удели галлюцинациям в сроках исполнения."
         system_text = get_prompt("meeting_verify_protocol", fallback=fallback_system)

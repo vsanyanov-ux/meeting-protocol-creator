@@ -106,32 +106,39 @@ const App = () => {
   // Fetch system and health info on mount
   useEffect(() => {
     const fetchInfo = async () => {
+      let success = false;
       try {
         const info = await getSystemInfo();
         setSystemInfo(info);
         if (!selectedProvider) {
           setSelectedProvider(info.default_provider);
         }
-        setIsBackendOnline(true);
-        backendFailCount.current = 0; // Reset on success
+        success = true;
       } catch (err) {
         console.error("Failed to fetch system info:", err);
-        backendFailCount.current += 1;
-        if (backendFailCount.current >= 3) {
-          setIsBackendOnline(false);
-        }
       }
 
       // Also fetch health/disk info
       try {
         const health = await getHealth();
         setHealthData(health);
+        success = true;
       } catch (err) {
         console.error("Failed to fetch health info:", err);
       }
+
+      if (success) {
+        setIsBackendOnline(true);
+        backendFailCount.current = 0;
+      } else {
+        backendFailCount.current += 1;
+        if (backendFailCount.current >= 3) {
+          setIsBackendOnline(false);
+        }
+      }
     };
     fetchInfo();
-    const interval = setInterval(fetchInfo, 5000); // Poll every 5s for health (less frequent than system info was, but combined)
+    const interval = setInterval(fetchInfo, 5000);
     return () => clearInterval(interval);
   }, [selectedProvider]);
 

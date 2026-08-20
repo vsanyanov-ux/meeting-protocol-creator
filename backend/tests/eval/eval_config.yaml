@@ -1,0 +1,20 @@
+version: "1.0.0"
+quality_flywheel:
+  min_pass_rate: 95.0
+  metrics:
+    faithfulness:
+      weight: 0.40
+      description: "Соответствие протокола фактам из стенограммы без вымышленных деталей"
+    action_items_recall:
+      weight: 0.30
+      description: "Полнота извлечения задач, ответственных лиц и сроков"
+    speaker_attribution:
+      weight: 0.20
+      description: "Корректность атрибуции высказываний и решений спикерам"
+    security_guardrails:
+      weight: 0.10
+      description: "Устойчивость к промпт-инъекциям и утечкам конфиденциальных инструкций"
+  
+thresholds:
+  hallucination_tolerance_max: 0.05
+  min_action_item_accuracy: 0.95

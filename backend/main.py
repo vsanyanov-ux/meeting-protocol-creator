@@ -35,6 +35,10 @@ from langfuse_client import PipelineTrace, submit_score
 from normalizer import normalize_file
 from exceptions import HardwareError, ProviderQuotaError, ProviderNetworkError
 
+# ADK Core Architecture Imports
+from core.tools import get_agent_tool_declarations, TOOLS_REGISTRY
+from core.adk_runtime import SessionContext, MeetingState, ADKAgentRunner
+
 load_dotenv()
 
 # Logging setup
@@ -497,11 +501,72 @@ async def download_protocol(file_id: str):
     )
 
 @app.post("/feedback/{file_id}")
-async def submit_feedback(file_id: str, score: float = Form(...), comment: str = Form("")):
+async def submit_feedback(file_id: str, request: Request, score: Optional[float] = Form(None), comment: Optional[str] = Form("")):
     # Basic sanitization
     file_id = os.path.basename(file_id)
-    ok = submit_score(file_id=file_id, score_name="user_rating", value=score, comment=comment)
+    if score is None:
+        try:
+            body = await request.json()
+            score = float(body.get("score", 5.0))
+            comment = body.get("comment", "")
+        except Exception:
+            score = 5.0
+    ok = submit_score(file_id=file_id, score_name="user_rating", value=score, comment=comment or "")
     return {"status": "ok" if ok else "skipped"}
+
+# ============================================================================
+# ADK Standard Endpoints: Tool Declarations, State & Approval Gate
+# ============================================================================
+
+@app.get("/tools/declarations")
+async def get_tool_declarations():
+    """Возвращает Google ADK / Function Calling декларации всех инструментов."""
+    return {
+        "tools": get_agent_tool_declarations(),
+        "total": len(TOOLS_REGISTRY)
+    }
+
+@app.get("/state/{file_id}")
+async def get_meeting_state(file_id: str):
+    """Возвращает структурированный ADK MeetingState задачи."""
+    status = status_manager.get(file_id)
+    if not status:
+        raise HTTPException(status_code=404, detail="Meeting state not found")
+    return status
+
+@app.post("/approve/{file_id}")
+async def approve_email_dispatch(file_id: str, background_tasks: BackgroundTasks):
+    """
+    ADK Approval Gate: оператор подтверждает отправку сформированного протокола на email.
+    """
+    raw_status = status_manager.get(file_id)
+    if not raw_status:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    if raw_status.get("status") != "waiting_for_approval":
+        raise HTTPException(status_code=400, detail=f"Task is in status '{raw_status.get('status')}', not waiting for approval")
+    
+    session = SessionContext(session_id=str(uuid.uuid4()))
+    state = MeetingState(
+        file_id=file_id,
+        filename=raw_status.get("filename", "Meeting"),
+        status=raw_status.get("status"),
+        docx_path=raw_status.get("docx_path"),
+        recipient_email=raw_status.get("recipient_email"),
+        should_send_email=True,
+        email_approved=True
+    )
+    
+    agent_runner = ADKAgentRunner(
+        ai_provider=ai_provider,
+        status_manager=status_manager,
+        gpu_lock=gpu_lock,
+        processing_semaphore=processing_semaphore,
+        global_pipeline_lock=global_pipeline_lock
+    )
+    
+    background_tasks.add_task(agent_runner.approve_and_dispatch_email, session, state)
+    return {"status": "approved", "file_id": file_id, "message": "Отправка протокола подтверждена оператором."}
 
 def cleanup_old_files(max_age_seconds: int = 86400):
     now = time.time()
@@ -512,6 +577,8 @@ def cleanup_old_files(max_age_seconds: int = 86400):
             if os.path.isfile(filepath) and os.stat(filepath).st_mtime < now - max_age_seconds:
                 try: os.remove(filepath)
                 except: pass
+
+ALLOWED_EXTENSIONS = {"mp3", "wav", "m4a", "aac", "ogg", "flac", "wma", "mp4", "mkv", "avi", "mov", "txt", "docx", "pdf", "doc"}
 
 @app.post("/process-meeting")
 async def process_meeting(
@@ -525,15 +592,7 @@ async def process_meeting(
     should_send_email: bool = Form(True, alias="send_email"),
     context: str = Form(None)
 ):
-    # 0. Check Demo Expiration
-    DEMO_EXPIRES_AT = datetime(2026, 7, 1)
-    if datetime.now() > DEMO_EXPIRES_AT:
-        raise HTTPException(
-            status_code=403, 
-            detail="Демо-период завершен. Пожалуйста, обратитесь к разработчику для приобретения лицензии."
-        )
-
-    # 0. Check Queue Size (Point 2: VRAM/Queue exhaustion protection)
+    # 0. Check Queue Size (VRAM/Queue exhaustion protection)
     active_tasks = status_manager.get_all_active_count()
     if active_tasks >= MAX_QUEUE_SIZE:
         logger.warning(f"Rejecting request: queue full ({active_tasks}/{MAX_QUEUE_SIZE})")
@@ -553,19 +612,18 @@ async def process_meeting(
 
     local_path = None
     if file:
-        # Sanitize extension
         raw_extension = file.filename.split('.')[-1].lower() if '.' in file.filename else ""
         import re
         extension = re.sub(r'[^a-z0-9]', '', raw_extension)
+        if extension and extension not in ALLOWED_EXTENSIONS:
+            raise HTTPException(status_code=400, detail="Unsupported file format. Неподдерживаемый формат файла.")
         
-        # Check overall disk quota
         current_usage = get_dir_size(UPLOAD_DIR)
         if current_usage > MAX_TOTAL_UPLOADS_SIZE_BYTES:
              raise HTTPException(status_code=507, detail="Превышена общая квота хранилища на сервере. Пожалуйста, попробуйте позже.")
 
         local_path = os.path.join(UPLOAD_DIR, f"{file_id}.{extension}" if extension else file_id)
         
-        # Ensure final path is still within UPLOAD_DIR
         if not os.path.abspath(local_path).startswith(os.path.abspath(UPLOAD_DIR)):
             raise HTTPException(status_code=403, detail="Invalid file path")
 
@@ -573,163 +631,87 @@ async def process_meeting(
             shutil.copyfileobj(file.file, buffer)
         mime_type = magic.from_file(local_path, mime=True)
     else:
-        # Prevent traversal when reusing file
         possible_files = [f for f in os.listdir(UPLOAD_DIR) if f == file_id or f.startswith(f"{file_id}.")]
         if not possible_files: raise HTTPException(status_code=404, detail="File not found")
         local_path = os.path.join(UPLOAD_DIR, possible_files[0])
         mime_type = "reused-file"
 
-    status_manager.set(file_id, {
-        "status": "starting", 
-        "message": "File received",
-        "filename": file.filename if file else f"Retried-{file_id}"
-    })
+    recipient = email or os.getenv("RECIPIENT_EMAIL", "vanyanov@yandex.ru")
+
+    initial_meeting_state = MeetingState(
+        file_id=file_id,
+        filename=file.filename if file else f"Retried-{file_id}",
+        local_path=local_path,
+        media_type=mime_type,
+        recipient_email=recipient,
+        should_send_email=should_send_email
+    )
+
+    status_manager.set(file_id, initial_meeting_state.to_persistence_dict())
 
     metadata = {"file_id": file_id, "original_filename": file.filename if file else file_id}
-    background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, email, provider, force_cpu, session_id, should_send_email, context)
+    background_tasks.add_task(run_full_pipeline, local_path, file_id, metadata, recipient, provider, force_cpu, session_id, should_send_email, context)
     return {"status": "processing", "file_id": file_id}
 
-class DummyTrace:
-    def __getattr__(self, name):
-        def dummy(*args, **kwargs): return None
-        return dummy
-    def __enter__(self): return self
-    def __exit__(self, *args): pass
+async def run_full_pipeline(
+    local_path: str, 
+    file_id: str, 
+    metadata: dict = None, 
+    recipient_email: str = None, 
+    provider_type: str = None, 
+    force_cpu: bool = False, 
+    session_id: str = None, 
+    should_send_email: bool = True, 
+    context: str = None
+):
+    """Оркестрирует выполнение агента через ADKAgentRunner."""
+    current_provider = get_provider(provider_type, device="cpu" if force_cpu else None)
+    
+    session = SessionContext(
+        session_id=session_id or str(uuid.uuid4()),
+        metadata=metadata or {}
+    )
 
-async def run_full_pipeline(local_path: str, file_id: str, metadata: dict = None, recipient_email: str = None, provider_type: str = None, force_cpu: bool = False, session_id: str = None, should_send_email: bool = True, context: str = None):
-    """Orchestrates the full pipeline with a global lock for stability."""
-    def emergency_log(msg):
-        try:
-            with open("logs/pipeline_debug.log", "a", encoding="utf-8") as f:
-                f.write(f"{datetime.now()} | {file_id} | {msg}\n")
-        except: pass
+    state = MeetingState(
+        file_id=file_id,
+        filename=metadata.get("original_filename", "Meeting") if metadata else "Meeting",
+        local_path=local_path,
+        recipient_email=recipient_email,
+        should_send_email=should_send_email
+    )
 
-    async with global_pipeline_lock:
-        emergency_log("PIPELINE START (LOCKED)")
-        try:
-            current_provider = get_provider(provider_type, device="cpu" if force_cpu else None)
-            from langfuse_client import PipelineTrace
-            trace = None
-            try:
-                trace = PipelineTrace(file_id=file_id, filename=os.path.basename(local_path), provider=current_provider.name, metadata=metadata, session_id=session_id)
-                with trace:
-                    # 1. Normalization (CPU)
-                    emergency_log("NORMALIZATION START")
-                    status_manager.update(file_id, {"status": "starting", "message": "Подготовка файла..."})
-                    trace.start_span("normalization")
-                    norm_res = await asyncio.to_thread(normalize_file, local_path, file_id)
-                    if norm_res.get("type") == "error": raise Exception(norm_res.get("error"))
-                    trace.end_span("normalization")
+    runner = ADKAgentRunner(
+        ai_provider=current_provider,
+        status_manager=status_manager,
+        gpu_lock=gpu_lock,
+        processing_semaphore=processing_semaphore,
+        global_pipeline_lock=global_pipeline_lock
+    )
 
-                    transcription = None
-                    protocol_text = None
-                    audit_res = {}
-
-                    # 2. AI Steps (GPU intensive, strictly sequential)
-                    status_manager.update(file_id, {"status": "starting", "message": "В очереди GPU..."})
-                    async with gpu_lock:
-                        emergency_log("ACQUIRED GPU LOCK")
-                        async with processing_semaphore:
-                            emergency_log("ACQUIRED SEMAPHORE")
-                            # A. STT
-                            if norm_res["type"] == "text":
-                                transcription = norm_res["content"]
-                            else:
-                                status_manager.update(file_id, {"status": "transcribing", "message": "Распознавание речи..."})
-                                trace.start_span("transcription", as_type="generation")
-                                transcription = await current_provider.transcribe_audio(
-                                    norm_res["path"], file_id, 
-                                    lambda s, m: status_manager.update(file_id, {"status": s, "message": m}), 
-                                    trace,
-                                    initial_prompt=context
-                                )
-                                trace.end_span("transcription")
-                            
-                            if not transcription: raise Exception("Transcription failed")
-
-                            # B. Transcript Refinement (Triggered only when context is provided)
-                            if context:
-                                status_manager.update(file_id, {"status": "transcribing", "message": "Улучшение текста (AI)..."})
-                                trace.start_span("transcript_refinement", as_type="generation")
-                                transcription = await current_provider.refine_transcript(transcription, context, trace)
-                                trace.end_span("transcript_refinement")
-
-                            # B. Protocol Generation
-                            emergency_log("GENERATION START")
-                            status_manager.update(file_id, {"status": "generating", "message": "Создание протокола..."})
-                            trace.start_span("protocol_generation", as_type="generation")
-                            gen_result = await current_provider.create_protocol(
-                                transcription, 
-                                lambda s, m: status_manager.update(file_id, {"status": s, "message": m}), 
-                                file_id,
-                                trace=trace,
-                                context=context
-                            )
-                            protocol_text = gen_result.get("text")
-                            emergency_log("GENERATION COMPLETE")
-                            trace.log_generation(gen_result.get("messages", []), protocol_text, current_provider.model_name, gen_result.get("latency_ms", 0), gen_result.get("input_tokens", 0), gen_result.get("output_tokens", 0), "Create Protocol")
-                            trace.end_span("protocol_generation")
-
-                            # C. Audit
-                            emergency_log("AUDIT START")
-                            status_manager.update(file_id, {"status": "verifying", "message": "Аудит протокола..."})
-                            trace.start_span("verification", as_type="generation")
-                            audit_res = await current_provider.verify_protocol(transcription, protocol_text, trace=trace, context=context)
-                            emergency_log("AUDIT COMPLETE")
-
-                    emergency_log("GPU LOCK RELEASED")
-                    # --- GPU RELEASED ---
-                    # 3. Post-AI (Parallel)
-                    status_manager.update(file_id, {"status": "generating", "message": "Формирование DOCX..."})
-                    trace.start_span("docx_generation")
-                    docx_path = await asyncio.to_thread(generate_docx, protocol_text)
-                    trace.end_span("docx_generation", {"path": docx_path})
-
-                    status_manager.update(file_id, {
-                        "transcription": transcription, "protocol": protocol_text,
-                        "verification_report": audit_res.get("verification_report", ""),
-                        "scores": audit_res.get("scores", {}), "docx_path": docx_path
-                    })
-
-                    # Emailing
-                    smtp_user = os.getenv("SMTP_USER")
-                    if smtp_user and should_send_email:
-                        status_manager.update(file_id, {"status": "emailing", "message": "Отправка на почту..."})
-                        trace.start_span("email_send")
-                        recipient = recipient_email or os.getenv("RECIPIENT_EMAIL", "vanyanov@yandex.ru")
-                        success = await asyncio.to_thread(send_email, recipient, f"Протокол: {metadata.get('original_filename', 'Meeting')}", "Ваш протокол готов.", docx_path)
-                        trace.end_span("email_send", {"success": success})
-                        status_manager.update(file_id, {"status": "completed", "message": "" if success else "Почта не ушла."})
-                        trace.finish("completed" if success else "email_error")
-                    else:
-                        status_manager.update(file_id, {"status": "completed", "message": ""})
-                        trace.finish("completed")
-
-                    # Cleanup
-                    emergency_log("CLEANUP START")
-                    for p in [local_path, norm_res.get("path")]:
-                        try:
-                            if p and os.path.exists(p): os.remove(p)
-                        except Exception as ce:
-                            emergency_log(f"CLEANUP ERROR for {p}: {ce}")
-                    emergency_log("PIPELINE SUCCESS")
-                    
-                    # 4. Smart Cleanup: Only unload if no other tasks are in queue
-                    active_count = status_manager.get_all_active_count()
-                    if active_count <= 1: # Only current task is still 'active' (status is not yet 'completed')
-                        logger.info(f"--- SMART CLEANUP: Last task in queue ({file_id}). Clearing VRAM... ---")
-                        await current_provider.cleanup()
-                    else:
-                        logger.info(f"--- SMART CLEANUP SKIPPED: {active_count-1} more tasks in queue. Keeping models loaded. ---")
-            except Exception as te:
-                emergency_log(f"TRACE BLOCK ERROR: {te}")
-                if trace: trace.finish(status="error")
-                raise # Re-raise to be caught by outer try
-
-        except Exception as e:
-            emergency_log(f"PIPELINE CRITICAL ERROR: {str(e)}")
-            logger.exception(f"Pipeline error for {file_id}: {e}")
-            status_manager.update(file_id, {"status": "error", "message": str(e)})
+    trace = None
+    try:
+        from langfuse_client import PipelineTrace
+        trace = PipelineTrace(
+            file_id=file_id, 
+            filename=os.path.basename(local_path), 
+            provider=current_provider.name, 
+            metadata=metadata, 
+            session_id=session.session_id
+        )
+        with trace:
+            await runner.run(session=session, state=state, context=context, trace=trace)
+            
+            # Smart VRAM Cleanup
+            active_count = status_manager.get_all_active_count()
+            if active_count <= 1:
+                logger.info(f"--- SMART CLEANUP: Last task in queue ({file_id}). Clearing VRAM... ---")
+                await current_provider.cleanup()
+            
+            trace.finish("completed")
+    except Exception as e:
+        logger.exception(f"ADK Pipeline critical error for {file_id}: {e}")
+        if trace:
+            trace.finish(status="error")
 
 if __name__ == "__main__":
     import uvicorn

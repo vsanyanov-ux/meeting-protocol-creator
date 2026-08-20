@@ -35,8 +35,8 @@ def send_email(recipient_email: str, subject: str, body: str, attachment_path: s
     clean_subject = subject.split(':')[-1].strip()
     msg['Subject'] = f"Протокол: {clean_subject}"
     
-    # Use only email address in From to avoid Yandex filters
-    msg['From'] = smtp_user
+    # Use branded sender name
+    msg['From'] = f"Протоколист <{smtp_user}>" if smtp_user else "Протоколист"
     msg['To'] = recipient_email
     msg['Date'] = formatdate(localtime=True)
     msg['Message-ID'] = make_msgid(domain='yandex.ru')
@@ -63,19 +63,20 @@ def send_email(recipient_email: str, subject: str, body: str, attachment_path: s
         with open(attachment_path, 'rb') as f:
             file_data = f.read()
             file_name = os.path.basename(attachment_path)
+            subtype = 'vnd.openxmlformats-officedocument.wordprocessingml.document' if file_name.endswith('.docx') else 'octet-stream'
             msg.add_attachment(
                 file_data, 
                 maintype='application', 
-                subtype='octet-stream', 
+                subtype=subtype, 
                 filename=file_name
             )
 
     def _do_send():
         logger.info(f"Connecting to {smtp_host}:{smtp_port}...")
         if smtp_port == 465:
-            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=10)
+            server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30)
         else:
-            server = smtplib.SMTP(smtp_host, smtp_port, timeout=10)
+            server = smtplib.SMTP(smtp_host, smtp_port, timeout=30)
             server.starttls()
             
         with server:
